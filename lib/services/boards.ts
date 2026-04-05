@@ -194,13 +194,15 @@ export const boardsService = {
               lostStageId: realLostStageId,
             },
           })
-          // Reflect in returned data
-          ;(created as any).wonStageId = realWonStageId
-          ;(created as any).lostStageId = realLostStageId
         }
       }
 
-      return { data: created, error: null }
+      // Re-fetch with stages to return complete data
+      const result = await prisma.board.findUnique({
+        where: { id: created.id },
+        include: { stages: { orderBy: { order: 'asc' } } },
+      })
+      return { data: result ?? created, error: null }
     } catch (error) {
       return { data: null, error: error as Error }
     }

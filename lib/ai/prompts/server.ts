@@ -13,10 +13,8 @@ export type PromptResolution = {
 
 /**
  * Resolves a prompt template, checking for organization-level overrides first.
- * The first parameter (_supabase) is kept for backward compatibility but ignored.
  */
 export async function getResolvedPrompt(
-  _supabase: any,
   organizationId: string,
   key: string
 ): Promise<PromptResolution | null> {

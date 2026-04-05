@@ -177,7 +177,7 @@ export async function POST(req: Request) {
 
   const featureKey = featureKeyByAction[action];
   if (featureKey) {
-    const enabled = await isAIFeatureEnabled(null as any, profile.organizationId as any, featureKey);
+    const enabled = await isAIFeatureEnabled(profile.organizationId as any, featureKey);
     if (!enabled) {
       return json<AIActionResponse>(
         { error: `Função de IA desativada para esta ação (${action}).` },
@@ -208,7 +208,7 @@ export async function POST(req: Request) {
     switch (action) {
       case 'analyzeLead': {
         const { deal, stageLabel } = data as any;
-        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_deals_analyze');
+        const resolved = await getResolvedPrompt(orgId as any, 'task_deals_analyze');
         const prompt = renderPromptTemplate(resolved?.content || '', {
           dealTitle: deal?.title || '',
           dealValue: deal?.value?.toLocaleString?.('pt-BR') ?? deal?.value ?? 0,
@@ -221,7 +221,7 @@ export async function POST(req: Request) {
 
       case 'generateEmailDraft': {
         const { deal } = data as any;
-        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_deals_email_draft');
+        const resolved = await getResolvedPrompt(orgId as any, 'task_deals_email_draft');
         const prompt = renderPromptTemplate(resolved?.content || '', {
           contactName: deal?.contactName || 'Cliente',
           companyName: deal?.companyName || 'Empresa',
@@ -297,7 +297,7 @@ Responda em português do Brasil.`,
               { id: 'PROSPECT', name: 'Oportunidade' }, { id: 'CUSTOMER', name: 'Cliente' },
               { id: 'OTHER', name: 'Outros' },
             ];
-        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_boards_generate_structure');
+        const resolved = await getResolvedPrompt(orgId as any, 'task_boards_generate_structure');
         const prompt = renderPromptTemplate(resolved?.content || '', { description, lifecycleJson: JSON.stringify(lifecycleList) });
         const result = await generateObject({ model, maxRetries: 3, schema: BoardStructureSchema, prompt });
         return json<AIActionResponse>({ result: result.object });
@@ -305,7 +305,7 @@ Responda em português do Brasil.`,
 
       case 'generateBoardStrategy': {
         const { boardData } = data as any;
-        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_boards_generate_strategy');
+        const resolved = await getResolvedPrompt(orgId as any, 'task_boards_generate_strategy');
         const prompt = renderPromptTemplate(resolved?.content || '', { boardName: boardData?.boardName || '' });
         const result = await generateObject({ model, maxRetries: 3, schema: BoardStrategySchema, prompt });
         return json<AIActionResponse>({ result: result.object });
@@ -315,7 +315,7 @@ Responda em português do Brasil.`,
         const { currentBoard, userInstruction, chatHistory } = data as any;
         const historyContext = chatHistory ? `\nHistórico:\n${JSON.stringify(chatHistory)}` : '';
         const boardContext = currentBoard ? `\nBoard atual (JSON):\n${JSON.stringify(currentBoard)}` : '';
-        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_boards_refine');
+        const resolved = await getResolvedPrompt(orgId as any, 'task_boards_refine');
         const prompt = renderPromptTemplate(resolved?.content || '', { userInstruction, boardContext, historyContext });
         const result = await generateObject({ model, maxRetries: 3, schema: RefineBoardSchema, prompt });
         return json<AIActionResponse>({ result: result.object });
@@ -323,7 +323,7 @@ Responda em português do Brasil.`,
 
       case 'generateObjectionResponse': {
         const { deal, objection } = data as any;
-        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_deals_objection_responses');
+        const resolved = await getResolvedPrompt(orgId as any, 'task_deals_objection_responses');
         const prompt = renderPromptTemplate(resolved?.content || '', { objection, dealTitle: deal?.title || '' });
         const result = await generateObject({ model, maxRetries: 3, schema: ObjectionResponseSchema, prompt });
         return json<AIActionResponse>({ result: result.object });
@@ -358,7 +358,7 @@ Campos: title, type (CALL/MEETING/EMAIL/TASK), date, contactName, companyName, c
       }
 
       case 'generateDailyBriefing': {
-        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_inbox_daily_briefing');
+        const resolved = await getResolvedPrompt(orgId as any, 'task_inbox_daily_briefing');
         const prompt = renderPromptTemplate(resolved?.content || '', { dataJson: JSON.stringify(data) });
         const result = await generateText({ model, maxRetries: 3, prompt });
         return json<AIActionResponse>({ result: result.text });
@@ -375,7 +375,7 @@ Campos: title, type (CALL/MEETING/EMAIL/TASK), date, contactName, companyName, c
 
       case 'generateSalesScript': {
         const { deal, scriptType, context } = data as any;
-        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_inbox_sales_script');
+        const resolved = await getResolvedPrompt(orgId as any, 'task_inbox_sales_script');
         const prompt = renderPromptTemplate(resolved?.content || '', {
           scriptType: scriptType || 'geral', dealTitle: deal?.title || '', context: context || '',
         });

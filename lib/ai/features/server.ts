@@ -4,10 +4,8 @@ import { prisma } from '@/lib/db/prisma';
 
 /**
  * Checks if a specific AI feature is enabled for the organization.
- * The first parameter (_supabase) is kept for backward compatibility but ignored.
  */
 export async function isAIFeatureEnabled(
-  _supabase: any,
   organizationId: string,
   key: string
 ): Promise<boolean> {

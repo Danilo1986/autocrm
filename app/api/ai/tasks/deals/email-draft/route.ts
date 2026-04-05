@@ -24,7 +24,7 @@ function json(body: unknown, status = 200): Response {
 export async function POST(req: Request) {
   try {
     const { model, organizationId } = await requireAITaskContext(req);
-    const enabled = await isAIFeatureEnabled(null, organizationId, 'ai_email_draft');
+    const enabled = await isAIFeatureEnabled(organizationId, 'ai_email_draft');
     if (!enabled) {
       return json({ error: { code: 'AI_FEATURE_DISABLED', message: 'Função de IA desativada: Rascunho de e-mail.' } }, 403);
     }
@@ -32,7 +32,7 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => null);
     const { deal } = GenerateEmailDraftInputSchema.parse(body);
 
-    const resolved = await getResolvedPrompt(null, organizationId, 'task_deals_email_draft');
+    const resolved = await getResolvedPrompt(organizationId, 'task_deals_email_draft');
     const prompt = renderPromptTemplate(resolved?.content || '', {
       contactName: deal?.contactName || 'Cliente',
       companyName: deal?.companyName || 'Empresa',

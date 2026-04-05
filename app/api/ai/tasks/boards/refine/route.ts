@@ -24,7 +24,7 @@ function json(body: unknown, status = 200): Response {
 export async function POST(req: Request) {
   try {
     const { model, organizationId } = await requireAITaskContext(req);
-    const enabled = await isAIFeatureEnabled(null, organizationId, 'ai_board_refine');
+    const enabled = await isAIFeatureEnabled(organizationId, 'ai_board_refine');
     if (!enabled) {
       return json({ error: { code: 'AI_FEATURE_DISABLED', message: 'Função de IA desativada: Refinar board.' } }, 403);
     }
@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     const historyContext = chatHistory ? `\nHistórico:\n${JSON.stringify(chatHistory)}` : '';
     const boardContext = currentBoard ? `\nBoard atual (JSON):\n${JSON.stringify(currentBoard)}` : '';
 
-    const resolved = await getResolvedPrompt(null, organizationId, 'task_boards_refine');
+    const resolved = await getResolvedPrompt(organizationId, 'task_boards_refine');
     const prompt = renderPromptTemplate(resolved?.content || '', {
       userInstruction,
       boardContext,

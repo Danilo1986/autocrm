@@ -121,7 +121,7 @@ export async function POST(req: Request) {
         );
     }
 
-    const chatEnabled = await isAIFeatureEnabled(null as any, organizationId, 'ai_chat_agent');
+    const chatEnabled = await isAIFeatureEnabled(organizationId, 'ai_chat_agent');
     if (!chatEnabled) {
         return new Response(
             'Função de IA desativada: Chat do agente (Pilot).',

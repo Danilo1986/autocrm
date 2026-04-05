@@ -132,13 +132,10 @@ export const contactsService = {
 
         // Date range on createdAt
         if (filters.dateStart || filters.dateEnd) {
-          where.createdAt = {} as any
-          if (filters.dateStart) {
-            where.createdAt.gte = new Date(filters.dateStart)
-          }
-          if (filters.dateEnd) {
-            where.createdAt.lte = new Date(filters.dateEnd)
-          }
+          const dateFilter: { gte?: Date; lte?: Date } = {}
+          if (filters.dateStart) dateFilter.gte = new Date(filters.dateStart)
+          if (filters.dateEnd) dateFilter.lte = new Date(filters.dateEnd)
+          where.createdAt = dateFilter
         }
 
         // Client company filter

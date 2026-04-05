@@ -24,7 +24,7 @@ function json(body: unknown, status = 200): Response {
 export async function POST(req: Request) {
   try {
     const { model, organizationId } = await requireAITaskContext(req);
-    const enabled = await isAIFeatureEnabled(null, organizationId, 'ai_sales_script');
+    const enabled = await isAIFeatureEnabled(organizationId, 'ai_sales_script');
     if (!enabled) {
       return json({ error: { code: 'AI_FEATURE_DISABLED', message: 'Função de IA desativada: Script de vendas.' } }, 403);
     }
@@ -32,7 +32,7 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => null);
     const { deal, scriptType, context } = GenerateSalesScriptInputSchema.parse(body);
 
-    const resolved = await getResolvedPrompt(null, organizationId, 'task_inbox_sales_script');
+    const resolved = await getResolvedPrompt(organizationId, 'task_inbox_sales_script');
     const template = resolved?.content || '';
     const prompt = renderPromptTemplate(template, {
       scriptType: scriptType || 'geral',
