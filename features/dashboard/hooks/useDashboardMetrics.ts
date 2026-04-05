@@ -2,6 +2,7 @@ import React from 'react';
 import { useDeals } from '@/lib/query/hooks/useDealsQuery';
 import { useContacts } from '@/lib/query/hooks/useContactsQuery';
 import { useBoards, useDefaultBoard } from '@/lib/query/hooks/useBoardsQuery';
+import type { Deal, Contact } from '@/types';
 
 export type PeriodFilter =
   | 'all'
@@ -165,8 +166,10 @@ function calculateChange(current: number, previous: number): number {
  * @returns {{ isLoading: boolean; deals: Deal[]; totalValue: number; wonDeals: Deal[]; wonRevenue: number; winRate: number; pipelineValue: number; topDeals: Deal[]; funnelData: { name: string; count: number; fill: string; }[]; ... 19 more ...; activeSnapshotDeals: Deal[]; }} Retorna um valor do tipo `{ isLoading: boolean; deals: Deal[]; totalValue: number; wonDeals: Deal[]; wonRevenue: number; winRate: number; pipelineValue: number; topDeals: Deal[]; funnelData: { name: string; count: number; fill: string; }[]; ... 19 more ...; activeSnapshotDeals: Deal[]; }`.
  */
 export const useDashboardMetrics = (period: PeriodFilter = 'this_month', boardId?: string) => {
-  const { data: allDeals = [], isLoading: dealsLoading } = useDeals();
-  const { data: allContacts = [], isLoading: contactsLoading } = useContacts();
+  const { data: rawDeals = [], isLoading: dealsLoading } = useDeals();
+  const { data: rawContacts = [], isLoading: contactsLoading } = useContacts();
+  const allDeals = rawDeals as Deal[];
+  const allContacts = rawContacts as Contact[];
   const { data: boards = [] } = useBoards();
   const { data: defaultBoard } = useDefaultBoard();
 

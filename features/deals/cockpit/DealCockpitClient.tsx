@@ -35,7 +35,7 @@ import { CallModal, type CallLogData } from '@/features/inbox/components/CallMod
 import { MessageComposerModal, type MessageChannel, type MessageExecutedEvent } from '@/features/inbox/components/MessageComposerModal';
 import { ScheduleModal, type ScheduleData, type ScheduleType } from '@/features/inbox/components/ScheduleModal';
 
-import type { QuickScript, ScriptCategory } from '@/lib/services/quickScripts';
+import type { QuickScript, ScriptCategory } from '@/features/inbox/hooks/useQuickScripts';
 import type { Activity, Board, BoardStage, Contact, DealView } from '@/types';
 
 type Tab = 'chat' | 'notas' | 'scripts' | 'arquivos';

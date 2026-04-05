@@ -3,7 +3,15 @@
  * React Query wrapper for deal notes CRUD
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { dealNotesService, DealNote } from '@/lib/services/dealNotes';
+
+export interface DealNote {
+    id: string;
+    dealId: string;
+    content: string;
+    createdBy: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+}
 
 /**
  * Hook React `useDealNotes` que encapsula uma lógica reutilizável.
@@ -20,9 +28,10 @@ export function useDealNotes(dealId: string | undefined) {
         queryKey,
         queryFn: async () => {
             if (!dealId) return [];
-            const { data, error } = await dealNotesService.getNotesForDeal(dealId);
-            if (error) throw error;
-            return data || [];
+            const res = await fetch(`/api/internal/deal-notes?dealId=${encodeURIComponent(dealId)}`);
+            const json = await res.json();
+            if (json.error) throw new Error(json.error);
+            return (json.data || []) as DealNote[];
         },
         enabled: !!dealId,
     });
@@ -31,9 +40,14 @@ export function useDealNotes(dealId: string | undefined) {
     const createNote = useMutation({
         mutationFn: async (content: string) => {
             if (!dealId) throw new Error('No deal ID');
-            const { data, error } = await dealNotesService.createNote(dealId, content);
-            if (error) throw error;
-            return data;
+            const res = await fetch('/api/internal/deal-notes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ dealId, content }),
+            });
+            const json = await res.json();
+            if (json.error) throw new Error(json.error);
+            return json.data as DealNote | null;
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey });
@@ -43,9 +57,14 @@ export function useDealNotes(dealId: string | undefined) {
     // Update note
     const updateNote = useMutation({
         mutationFn: async ({ noteId, content }: { noteId: string; content: string }) => {
-            const { data, error } = await dealNotesService.updateNote(noteId, content);
-            if (error) throw error;
-            return data;
+            const res = await fetch(`/api/internal/deal-notes/${encodeURIComponent(noteId)}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content }),
+            });
+            const json = await res.json();
+            if (json.error) throw new Error(json.error);
+            return json.data as DealNote | null;
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey });
@@ -55,8 +74,11 @@ export function useDealNotes(dealId: string | undefined) {
     // Delete note
     const deleteNote = useMutation({
         mutationFn: async (noteId: string) => {
-            const { error } = await dealNotesService.deleteNote(noteId);
-            if (error) throw error;
+            const res = await fetch(`/api/internal/deal-notes/${encodeURIComponent(noteId)}`, {
+                method: 'DELETE',
+            });
+            const json = await res.json();
+            if (json.error) throw new Error(json.error);
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey });

@@ -11,7 +11,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { queryKeys, DEALS_VIEW_KEY } from '../index';
 import { dealsService, contactsService, companiesService, boardStagesService } from '@/lib/services';
 import { useAuth } from '@/context/AuthContext';
-import type { Deal, DealView, DealItem } from '@/types';
+import type { Deal, DealView, DealItem, Contact, CRMCompany, BoardStage } from '@/types';
 
 // ============ QUERY HOOKS ============
 
@@ -96,13 +96,13 @@ export const useDealsView = (filters?: DealsFilters) => {
         companiesService.getByIds(companyIds),
       ]);
 
-      const contacts = contactsResult.data || [];
-      const companies = companiesResult.data || [];
+      const contacts = (contactsResult.data || []) as Contact[];
+      const companies = (companiesResult.data || []) as CRMCompany[];
 
       // Create lookup maps
       const contactMap = new Map(contacts.map(c => [c.id, c]));
       const companyMap = new Map(companies.map(c => [c.id, c]));
-      const stageMap = new Map(stages.map(s => [s.id, s.label || s.name]));
+      const stageMap = new Map((stages as BoardStage[]).map(s => [s.id, s.label || (s as any).name]));
 
       // Enrich deals with company/contact names and stageLabel
       let enrichedDeals: DealView[] = deals.map(deal => {
@@ -194,13 +194,13 @@ export const useDealsByBoard = (boardId: string) => {
         companiesService.getByIds(companyIds),
       ]);
 
-      const contacts = contactsResult.data || [];
-      const companies = companiesResult.data || [];
+      const contacts = (contactsResult.data || []) as Contact[];
+      const companies = (companiesResult.data || []) as CRMCompany[];
 
       // Create lookup maps
       const contactMap = new Map(contacts.map(c => [c.id, c]));
       const companyMap = new Map(companies.map(c => [c.id, c]));
-      const stageMap = new Map(stages.map(s => [s.id, s.label || s.name]));
+      const stageMap = new Map((stages as BoardStage[]).map(s => [s.id, s.label || (s as any).name]));
 
       // Enrich ALL deals (filtering happens in select)
       const enrichedDeals: DealView[] = deals.map(deal => {

@@ -4,7 +4,7 @@
  */
 import React, { useState, useEffect } from 'react';
 import { X, Save, Sparkles, Eye, MessageSquare, AlertCircle, Target, RefreshCw } from 'lucide-react';
-import type { ScriptCategory } from '@/lib/services/quickScripts';
+import type { ScriptCategory } from '@/features/inbox/hooks/useQuickScripts';
 
 interface ScriptEditorModalProps {
     isOpen: boolean;

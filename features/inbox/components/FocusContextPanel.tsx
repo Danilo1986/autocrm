@@ -43,7 +43,7 @@ import { ScheduleModal, ScheduleData, ScheduleType } from './ScheduleModal';
 import { generateSalesScript } from '@/lib/ai/tasksClient';
 import { MessageComposerModal, type MessageChannel } from './MessageComposerModal';
 import { callAIProxy } from '@/lib/ai/ai-proxy';
-import type { ScriptCategory } from '@/lib/services/quickScripts';
+import type { ScriptCategory } from '@/features/inbox/hooks/useQuickScripts';
 
 // Performance: reuse Intl formatter instances.
 const PT_BR_SHORT_DATE_FORMATTER = new Intl.DateTimeFormat('pt-BR');
@@ -1673,7 +1673,7 @@ export const FocusContextPanel: React.FC<FocusContextPanelProps> = ({
                                                                                 title: script.title,
                                                                                 category: script.category as ScriptCategory,
                                                                                 template: script.template,
-                                                                                icon: script.icon,
+                                                                                icon: script.icon ?? '',
                                                                             });
                                                                             setIsScriptEditorOpen(true);
                                                                         }}

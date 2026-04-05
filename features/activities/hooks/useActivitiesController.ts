@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useToast } from '@/context/ToastContext';
 import { useAuth } from '@/context/AuthContext';
-import { Activity } from '@/types';
+import { Activity, Deal, Contact } from '@/types';
 import {
   useActivities,
   useCreateActivity,
@@ -72,8 +72,8 @@ export const useActivitiesController = () => {
 
   // Performance: build lookups once (avoid `.find(...)` in handlers).
   const activitiesById = useMemo(() => new Map(activities.map((a) => [a.id, a])), [activities]);
-  const dealsById = useMemo(() => new Map(deals.map((d) => [d.id, d])), [deals]);
-  const contactsById = useMemo(() => new Map(contacts.map((c) => [c.id, c])), [contacts]);
+  const dealsById = useMemo(() => new Map((deals as Deal[]).map((d) => [d.id, d])), [deals]);
+  const contactsById = useMemo(() => new Map((contacts as Contact[]).map((c) => [c.id, c])), [contacts]);
 
   // Performance: compute date boundaries once per render (used inside memoized filters).
   const dateBoundaries = useMemo(() => {

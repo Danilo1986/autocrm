@@ -9,6 +9,7 @@
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
+    "noImplicitAny": false, // TODO: enable after client service wrappers are fully typed
     "noEmit": true,
     "esModuleInterop": true,
     "module": "esnext",

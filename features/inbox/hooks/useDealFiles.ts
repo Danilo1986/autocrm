@@ -3,7 +3,29 @@
  * React Query wrapper for deal files upload/download
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { dealFilesService, DealFile } from '@/lib/services/dealFiles';
+
+export interface DealFile {
+    id: string;
+    dealId: string;
+    fileName: string;
+    filePath: string;
+    fileSize: number | null;
+    mimeType: string | null;
+    createdAt: Date;
+    createdBy: string | null;
+}
+
+function formatFileSize(bytes: number | null): string {
+    if (!bytes) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let i = 0;
+    let size = bytes;
+    while (size >= 1024 && i < units.length - 1) {
+        size /= 1024;
+        i++;
+    }
+    return `${size.toFixed(1)} ${units[i]}`;
+}
 
 /**
  * Hook React `useDealFiles` que encapsula uma lógica reutilizável.
@@ -20,9 +42,10 @@ export function useDealFiles(dealId: string | undefined) {
         queryKey,
         queryFn: async () => {
             if (!dealId) return [];
-            const { data, error } = await dealFilesService.getFilesForDeal(dealId);
-            if (error) throw error;
-            return data || [];
+            const res = await fetch(`/api/internal/deal-files?dealId=${encodeURIComponent(dealId)}`);
+            const json = await res.json();
+            if (json.error) throw new Error(json.error);
+            return (json.data || []) as DealFile[];
         },
         enabled: !!dealId,
     });
@@ -31,9 +54,16 @@ export function useDealFiles(dealId: string | undefined) {
     const uploadFile = useMutation({
         mutationFn: async (file: File) => {
             if (!dealId) throw new Error('No deal ID');
-            const { data, error } = await dealFilesService.uploadFile(dealId, file);
-            if (error) throw error;
-            return data;
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('dealId', dealId);
+            const res = await fetch('/api/internal/deal-files', {
+                method: 'POST',
+                body: formData,
+            });
+            const json = await res.json();
+            if (json.error) throw new Error(json.error);
+            return json.data as DealFile | null;
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey });
@@ -43,8 +73,12 @@ export function useDealFiles(dealId: string | undefined) {
     // Delete file
     const deleteFile = useMutation({
         mutationFn: async ({ fileId, filePath }: { fileId: string; filePath: string }) => {
-            const { error } = await dealFilesService.deleteFile(fileId, filePath);
-            if (error) throw error;
+            const res = await fetch(
+                `/api/internal/deal-files/${encodeURIComponent(fileId)}?filePath=${encodeURIComponent(filePath)}`,
+                { method: 'DELETE' }
+            );
+            const json = await res.json();
+            if (json.error) throw new Error(json.error);
         },
         onSuccess: () => {
             queryClient.invalidateQueries({ queryKey });
@@ -53,15 +87,18 @@ export function useDealFiles(dealId: string | undefined) {
 
     // Download file
     const downloadFile = async (file: DealFile) => {
-        const { url, error } = await dealFilesService.getDownloadUrl(file.filePath);
-        if (error || !url) {
-            console.error('Download error:', error);
+        const res = await fetch(
+            `/api/internal/deal-files/${encodeURIComponent(file.id)}?filePath=${encodeURIComponent(file.filePath)}`
+        );
+        const json = await res.json();
+        if (json.error || !json.url) {
+            console.error('Download error:', json.error);
             return;
         }
 
         // Open in new tab or trigger download
         const a = document.createElement('a');
-        a.href = url;
+        a.href = json.url;
         a.download = file.fileName;
         a.target = '_blank';
         document.body.appendChild(a);
@@ -76,6 +113,6 @@ export function useDealFiles(dealId: string | undefined) {
         uploadFile,
         deleteFile,
         downloadFile,
-        formatFileSize: dealFilesService.formatFileSize,
+        formatFileSize,
     };
 }

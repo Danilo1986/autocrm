@@ -3,7 +3,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Search, User, Plus, Building2 } from 'lucide-react';
 import { useContacts, useCompanies } from '@/lib/query/hooks';
-import type { Contact, Company } from '@/types';
+import type { Contact, Company, CRMCompany } from '@/types';
 
 interface ContactSearchComboboxProps {
   onSelectContact: (contact: Contact | null) => void;
@@ -37,7 +37,7 @@ export const ContactSearchCombobox: React.FC<ContactSearchComboboxProps> = ({
 
   // Criar mapa de empresas para lookup rápido
   const companyMap = useMemo(() => {
-    return new Map(companies.map(c => [c.id, c]));
+    return new Map((companies as CRMCompany[]).map(c => [c.id, c]));
   }, [companies]);
 
   // Filtrar contatos baseado no termo de busca

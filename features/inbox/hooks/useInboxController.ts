@@ -19,7 +19,7 @@ import {
 import { useDefaultBoard } from '@/lib/query/hooks/useBoardsQuery';
 import { useRealtimeSync } from '@/lib/realtime/useRealtimeSync';
 import { useHiddenSuggestionIds, useRecordSuggestionInteraction } from '@/lib/query/hooks/useAISuggestionsQuery';
-import { SuggestionType } from '@/lib/services/aiSuggestions';
+import { SuggestionType } from '@/lib/query/hooks/useAISuggestionsQuery';
 import { isDebugMode, generateFakeContacts, fakeDeal } from '@/lib/debug';
 // supabase client removed - debug seed uses fetch() calls
 
