@@ -9,7 +9,7 @@
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { queryKeys, DEALS_VIEW_KEY } from '../index';
-import { dealsService, contactsService, companiesService, boardStagesService } from '@/lib/supabase';
+import { dealsService, contactsService, companiesService, boardStagesService } from '@/lib/services';
 import { useAuth } from '@/context/AuthContext';
 import type { Deal, DealView, DealItem } from '@/types';
 

@@ -34,7 +34,7 @@ export const NotificationPopover = () => {
     }, []);
 
     const handleNotificationClick = (id: string) => {
-        markAsRead(id);
+        markAsRead.mutate(id);
         setIsOpen(false);
     };
 
@@ -96,7 +96,7 @@ export const NotificationPopover = () => {
                         <div className="flex items-center gap-2">
                             {count > 0 && (
                                 <button
-                                    onClick={() => markAllAsRead()}
+                                    onClick={() => markAllAsRead.mutate()}
                                     className="text-xs text-slate-500 hover:text-primary-600 transition-colors"
                                 >
                                     Marcar todas como lidas

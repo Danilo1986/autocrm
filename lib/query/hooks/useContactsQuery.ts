@@ -8,7 +8,7 @@
  */
 import { useQuery, useMutation, useQueryClient, keepPreviousData, type QueryKey } from '@tanstack/react-query';
 import { queryKeys } from '../index';
-import { contactsService, companiesService } from '@/lib/supabase';
+import { contactsService, companiesService } from '@/lib/services';
 import { useAuth } from '@/context/AuthContext';
 import type { Contact, ContactStage, Company, PaginationState, PaginatedResponse, ContactsServerFilters } from '@/types';
 

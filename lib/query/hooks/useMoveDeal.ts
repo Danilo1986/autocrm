@@ -13,10 +13,10 @@
  */
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { queryKeys, DEALS_VIEW_KEY } from '../queryKeys';
-import { dealsService } from '@/lib/supabase';
-import { boardsService } from '@/lib/supabase/boards'; // Added
-import { activitiesService } from '@/lib/supabase/activities';
-import { contactsService } from '@/lib/supabase/contacts';
+import { dealsService } from '@/lib/services';
+import { boardsService } from '@/lib/services/boards'; // Added
+import { activitiesService } from '@/lib/services/activities';
+import { contactsService } from '@/lib/services/contacts';
 import type { Deal, DealView, Board, Activity } from '@/types';
 
 interface MoveDealParams {

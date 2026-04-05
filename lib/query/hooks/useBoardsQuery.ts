@@ -8,7 +8,7 @@
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../index';
-import { boardsService } from '@/lib/supabase';
+import { boardsService } from '@/lib/services';
 import { useAuth } from '@/context/AuthContext';
 import type { Board, BoardStage } from '@/types';
 

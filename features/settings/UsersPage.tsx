@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
 import ConfirmModal from '@/components/ConfirmModal';
@@ -58,8 +57,6 @@ export const UsersPage: React.FC = () => {
     const [userToDelete, setUserToDelete] = useState<Profile | null>(null);
     const [activeInvites, setActiveInvites] = useState<any[]>([]);
     const [expirationDays, setExpirationDays] = useState<number | null>(7); // 7 days default, null = never
-
-    const sb = supabase;
 
     const fetchUsers = useCallback(async () => {
         try {
@@ -133,7 +130,7 @@ export const UsersPage: React.FC = () => {
         }
     }, [fetchActiveInvites, isModalOpen]);
 
-    if (!sb) {
+    if (false) { // Supabase check removed - always configured with Prisma
         return (
             <div className="min-h-[60vh] flex items-center justify-center">
                 <div className="text-center max-w-md">

@@ -8,7 +8,7 @@
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../index';
-import { activitiesService } from '@/lib/supabase';
+import { activitiesService } from '@/lib/services';
 import { sortActivitiesSmart } from '@/lib/utils/activitySort';
 import { useAuth } from '@/context/AuthContext';
 import type { Activity } from '@/types';

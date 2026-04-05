@@ -1,4 +1,7 @@
 import { prisma } from '@/lib/db/prisma'
+import type { DealNote as PrismaDealNote } from '@prisma/client'
+
+export type DealNote = PrismaDealNote
 
 export const dealNotesService = {
   async getNotesForDeal(dealId: string) {

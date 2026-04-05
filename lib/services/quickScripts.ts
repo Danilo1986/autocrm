@@ -1,6 +1,15 @@
 import { prisma } from '@/lib/db/prisma'
 
+import type { QuickScript as PrismaQuickScript } from '@prisma/client'
+
 export type ScriptCategory = 'followup' | 'objection' | 'closing' | 'intro' | 'rescue' | 'other'
+export type QuickScript = PrismaQuickScript
+export interface CreateScriptInput {
+  title: string
+  category: ScriptCategory
+  template: string
+  icon?: string
+}
 
 export const quickScriptsService = {
   async getScripts() {

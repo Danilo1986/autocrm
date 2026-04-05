@@ -7,7 +7,7 @@ import React, {
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Contact, Company } from '@/types';
-import { contactsService, companiesService } from '@/lib/supabase';
+import { contactsService, companiesService } from '@/lib/services';
 import { useAuth } from '../AuthContext';
 import { queryKeys } from '@/lib/query';
 import {

@@ -9,7 +9,7 @@ import React, {
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Board, BoardStage } from '@/types';
-import { boardsService } from '@/lib/supabase';
+import { boardsService } from '@/lib/services';
 import { useAuth } from '../AuthContext';
 import { useToast } from '../ToastContext';
 import { queryKeys } from '@/lib/query';

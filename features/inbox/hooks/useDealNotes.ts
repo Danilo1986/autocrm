@@ -3,7 +3,7 @@
  * React Query wrapper for deal notes CRUD
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { dealNotesService, DealNote } from '@/lib/supabase/dealNotes';
+import { dealNotesService, DealNote } from '@/lib/services/dealNotes';
 
 /**
  * Hook React `useDealNotes` que encapsula uma lógica reutilizável.

@@ -7,7 +7,7 @@ import React, {
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Activity } from '@/types';
-import { activitiesService } from '@/lib/supabase';
+import { activitiesService } from '@/lib/services';
 import { useAuth } from '../AuthContext';
 import { queryKeys } from '@/lib/query';
 import { useActivities as useTanStackActivities } from '@/lib/query/hooks/useActivitiesQuery';

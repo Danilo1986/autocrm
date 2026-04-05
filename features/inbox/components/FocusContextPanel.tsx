@@ -42,8 +42,8 @@ import { ScriptEditorModal, ScriptFormData } from './ScriptEditorModal';
 import { ScheduleModal, ScheduleData, ScheduleType } from './ScheduleModal';
 import { generateSalesScript } from '@/lib/ai/tasksClient';
 import { MessageComposerModal, type MessageChannel } from './MessageComposerModal';
-import { callAIProxy } from '@/lib/supabase/ai-proxy';
-import type { ScriptCategory } from '@/lib/supabase/quickScripts';
+import { callAIProxy } from '@/lib/ai/ai-proxy';
+import type { ScriptCategory } from '@/lib/services/quickScripts';
 
 // Performance: reuse Intl formatter instances.
 const PT_BR_SHORT_DATE_FORMATTER = new Intl.DateTimeFormat('pt-BR');

@@ -7,7 +7,7 @@ import React, {
 } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Deal, DealView, DealItem, Company, Contact, Board } from '@/types';
-import { dealsService } from '@/lib/supabase';
+import { dealsService } from '@/lib/services';
 import { useAuth } from '../AuthContext';
 import { queryKeys, DEALS_VIEW_KEY } from '@/lib/query';
 import { useDeals as useTanStackDealsQuery } from '@/lib/query/hooks/useDealsQuery';

@@ -743,7 +743,7 @@ export const useBoardsController = () => {
     if (!board) return;
 
     // Verifica quantos deals tem
-    const result = await import('@/lib/supabase/boards').then(m =>
+    const result = await import('@/lib/services/boards').then(m =>
       m.boardsService.canDelete(boardId)
     );
 
@@ -763,7 +763,7 @@ export const useBoardsController = () => {
     if (targetBoardId === '__DELETE__') {
       try {
         // Deleta todos os deals do board primeiro
-        const { dealsService } = await import('@/lib/supabase/deals');
+        const { dealsService } = await import('@/lib/services/deals');
         const { error: deleteDealsError } = await dealsService.deleteByBoardId(boardToDelete.id);
 
         if (deleteDealsError) {

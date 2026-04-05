@@ -22,7 +22,7 @@
  * 
  * @example
  * ```typescript
- * import { callAIProxy, isConsentError, isRateLimitError } from '@/lib/supabase/ai-proxy';
+ * import { callAIProxy, isConsentError, isRateLimitError } from '@/lib/ai/ai-proxy';
  * 
  * try {
  *   const result = await callAIProxy('analyzeLead', { deal: {...} });

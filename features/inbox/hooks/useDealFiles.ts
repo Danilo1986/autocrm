@@ -3,7 +3,7 @@
  * React Query wrapper for deal files upload/download
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { dealFilesService, DealFile } from '@/lib/supabase/dealFiles';
+import { dealFilesService, DealFile } from '@/lib/services/dealFiles';
 
 /**
  * Hook React `useDealFiles` que encapsula uma lógica reutilizável.

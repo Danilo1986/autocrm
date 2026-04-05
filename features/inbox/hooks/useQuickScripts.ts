@@ -3,7 +3,7 @@
  * React Query wrapper for quick scripts CRUD
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { quickScriptsService, QuickScript, CreateScriptInput, ScriptCategory } from '@/lib/supabase/quickScripts';
+import { quickScriptsService, QuickScript, CreateScriptInput, ScriptCategory } from '@/lib/services/quickScripts';
 import { useAuth } from '@/context/AuthContext';
 
 /**

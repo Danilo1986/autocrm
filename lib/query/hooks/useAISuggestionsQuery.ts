@@ -3,7 +3,7 @@
  * Provides cached access to dismissed/accepted suggestions
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { aiSuggestionsService, SuggestionAction, SuggestionType } from '@/lib/supabase/aiSuggestions';
+import { aiSuggestionsService, SuggestionAction, SuggestionType } from '@/lib/services/aiSuggestions';
 import { useAuth } from '@/context/AuthContext';
 import { queryKeys } from '../index';
 

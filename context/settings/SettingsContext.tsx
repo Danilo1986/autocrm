@@ -10,7 +10,7 @@ import React, {
 } from 'react';
 import { usePathname } from 'next/navigation';
 import { LifecycleStage, Product, CustomFieldDefinition, Lead } from '@/types';
-import { settingsService, lifecycleStagesService, productsService } from '@/lib/supabase';
+import { settingsService, lifecycleStagesService, productsService } from '@/lib/services';
 import { useAuth } from '../AuthContext';
 import { AI_DEFAULT_MODELS, AI_DEFAULT_PROVIDER } from '@/lib/ai/defaults';
 

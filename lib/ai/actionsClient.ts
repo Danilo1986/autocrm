@@ -1,6 +1,6 @@
 'use client';
 
-import { callAIProxy, isConsentError, isRateLimitError } from '@/lib/supabase/ai-proxy';
+import { callAIProxy, isConsentError, isRateLimitError } from '@/lib/ai/ai-proxy';
 import type { Deal, DealView, LifecycleStage } from '@/types';
 import type { ParsedAction } from '@/types/aiActions';
 

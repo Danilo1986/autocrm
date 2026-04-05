@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Copy, ExternalLink, Mail, MessageCircle, Sparkles, Loader2, AlertCircle } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { rewriteMessageDraft, type RewriteMessageDraftInput } from '@/lib/ai/actionsClient';
-import { isConsentError, isRateLimitError } from '@/lib/supabase/ai-proxy';
+import { isConsentError, isRateLimitError } from '@/lib/ai/ai-proxy';
 import { toWhatsAppPhone } from '@/lib/phone';
 
 export type MessageChannel = 'WHATSAPP' | 'EMAIL';
