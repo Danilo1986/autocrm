@@ -8,7 +8,7 @@
  *   useRealtimePreset('contacts');  // Syncs contacts + companies
  *   useRealtimePreset('kanban');    // Syncs deals + stages
  */
-import { useRealtimeSync } from './useRealtimeSync';
+import { useRealtimeSync } from './useRealtimeSSE';
 
 // Table combinations for common scenarios
 const REALTIME_PRESETS = {

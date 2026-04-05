@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { isAllowedOrigin } from '@/lib/security/sameOrigin';
-import { createClient } from '@supabase/supabase-js';
+import { createStaticAdminClient as createClient } from '@/lib/supabase/server';
 
 export const maxDuration = 60;
 export const runtime = 'nodejs';
@@ -37,9 +37,7 @@ export async function POST(req: Request) {
 
   const { supabase: supabaseConfig, actions } = parsed.data;
   
-  const supabase = createClient(supabaseConfig.url, supabaseConfig.serviceRoleKey, {
-    auth: { persistSession: false },
-  });
+  const supabase = createClient();
 
   const results: { action: string; success: boolean; error?: string }[] = [];
 

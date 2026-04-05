@@ -7,7 +7,7 @@ import { Database, AlertTriangle, Trash2, Loader2 } from 'lucide-react';
 import { useCRM } from '@/context/CRMContext';
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
-import { supabase } from '@/lib/supabase';
+// Migration: supabase removed, using fetch API for data operations
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/query';
 
@@ -20,8 +20,6 @@ export const DataStorageSettings: React.FC = () => {
     const { profile } = useAuth();
     const { addToast } = useToast();
     const queryClient = useQueryClient();
-
-    const sb = supabase;
 
     const [showDangerZone, setShowDangerZone] = useState(false);
     const [confirmText, setConfirmText] = useState('');
@@ -46,103 +44,15 @@ export const DataStorageSettings: React.FC = () => {
             return;
         }
 
-        if (!sb) {
-            addToast('Supabase não está configurado neste ambiente.', 'error');
-            return;
-        }
-
         setIsDeleting(true);
 
         try {
-            // Ordem importa por causa das FKs!
-            // 0. Limpar referências de stages/boards dentro de `boards` (FK boards.won_stage_id/lost_stage_id -> board_stages)
-            // Se não zerarmos isso antes, o delete de `board_stages` falha com:
-            // "violates foreign key constraint boards_won_stage_id_fkey".
-            const { error: boardsRefsError } = await sb
-                .from('boards')
-                .update({ won_stage_id: null, lost_stage_id: null, next_board_id: null })
-                .neq('id', '00000000-0000-0000-0000-000000000000'); // Update all
-            if (boardsRefsError) throw boardsRefsError;
-
-            // 0.1 Integrações/Webhooks (novas FKs para board_stages/boards)
-            // Se houver fontes de entrada apontando para um stage, o delete de `board_stages` falha com:
-            // "violates foreign key constraint integration_inbound_sources_entry_stage_id_fkey".
-            // Por isso, limpamos tudo que depende de integrações antes de mexer em stages/boards.
-            //
-            // Ordem sugerida:
-            // - webhook_deliveries -> webhook_events_out -> webhook_events_in -> endpoints -> inbound_sources
-            const { error: deliveriesError } = await sb
-                .from('webhook_deliveries')
-                .delete()
-                .neq('id', '00000000-0000-0000-0000-000000000000');
-            if (deliveriesError) console.warn('Aviso: erro ao limpar webhook_deliveries:', deliveriesError);
-
-            const { error: eventsOutError } = await sb
-                .from('webhook_events_out')
-                .delete()
-                .neq('id', '00000000-0000-0000-0000-000000000000');
-            if (eventsOutError) console.warn('Aviso: erro ao limpar webhook_events_out:', eventsOutError);
-
-            const { error: eventsInError } = await sb
-                .from('webhook_events_in')
-                .delete()
-                .neq('id', '00000000-0000-0000-0000-000000000000');
-            if (eventsInError) console.warn('Aviso: erro ao limpar webhook_events_in:', eventsInError);
-
-            const { error: outboundError } = await sb
-                .from('integration_outbound_endpoints')
-                .delete()
-                .neq('id', '00000000-0000-0000-0000-000000000000');
-            if (outboundError) console.warn('Aviso: erro ao limpar integration_outbound_endpoints:', outboundError);
-
-            const { error: inboundError } = await sb
-                .from('integration_inbound_sources')
-                .delete()
-                .neq('id', '00000000-0000-0000-0000-000000000000');
-            if (inboundError) console.warn('Aviso: erro ao limpar integration_inbound_sources:', inboundError);
-
-            // 1. Activities (depende de deals)
-            const { error: activitiesError } = await sb.from('activities').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-            if (activitiesError) throw activitiesError;
-
-            // 2. Deal Items (depende de deals)
-            const { error: itemsError } = await sb.from('deal_items').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-            if (itemsError) throw itemsError;
-
-            // 3. Deals (depende de boards, contacts, companies)
-            const { error: dealsError } = await sb.from('deals').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-            if (dealsError) throw dealsError;
-
-            // 0. Limpar referência de Active Board em user_settings (evita erro de FK)
-            const { error: userSettingsError } = await sb
-                .from('user_settings')
-                .update({ active_board_id: null })
-                .neq('id', '00000000-0000-0000-0000-000000000000'); // Update all
-            if (userSettingsError) console.warn('Aviso: erro ao limpar user_settings (pode não existir ainda):', userSettingsError);
-
-            // 4. Board Stages (depende de boards)
-            const { error: stagesError } = await sb.from('board_stages').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-            if (stagesError) throw stagesError;
-
-            // 5. Boards
-            const { error: boardsError } = await sb.from('boards').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-            if (boardsError) throw boardsError;
-
-            // 6. Contacts
-            const { error: contactsError } = await sb.from('contacts').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-            if (contactsError) throw contactsError;
-
-            // 7. CRM Companies (empresas dos clientes, não a company do tenant!)
-            const { error: crmCompaniesError } = await sb.from('crm_companies').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-            if (crmCompaniesError) throw crmCompaniesError;
-
-            // 8. Tags
-            const { error: tagsError } = await sb.from('tags').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-            if (tagsError) throw tagsError;
-
-            // 9. Products
-            const { error: productsError } = await sb.from('products').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-            if (productsError) throw productsError;
+            // Nuke database via API route
+            const res = await fetch('/api/settings/nuke-database', { method: 'POST' });
+            if (!res.ok) {
+                const json = await res.json().catch(() => ({}));
+                throw new Error(json.error || 'Failed to nuke database');
+            }
 
             // Invalida todo o cache do React Query
             await queryClient.invalidateQueries();

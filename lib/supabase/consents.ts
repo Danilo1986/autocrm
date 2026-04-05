@@ -1,11 +1,19 @@
 /**
- * Consent Management Service
+ * Consent Management Service - Migration Shim
  * T048: Allow users to revoke AI consent
- * 
- * LGPD Compliant - Art. 8º §5 (revogação de consentimento)
+ *
+ * LGPD Compliant - Art. 8o §5 (revogacao de consentimento)
+ *
+ * Re-exports from Prisma-based consent service.
  */
-import { supabase } from './client';
 
+export type { ConsentType } from '../services/consent'
+export { CONSENT_VERSION, CONSENT_VERSIONS } from '../services/consent'
+
+/**
+ * Legacy UserConsent interface for backwards compatibility.
+ * Maps to the Prisma UserConsent model shape.
+ */
 export interface UserConsent {
   id: string;
   user_id: string;
@@ -20,230 +28,41 @@ export interface UserConsent {
   revoked_at: string | null;
 }
 
+/**
+ * Legacy consentsService shim.
+ *
+ * Client-side code should use fetch('/api/consent/...') instead.
+ * Server-side code should import from '@/lib/services/consent' directly.
+ */
 export const consentsService = {
-  /**
-   * Get current active consent for user
-   */
   async getCurrentConsent(): Promise<{ data: UserConsent | null; error: Error | null }> {
-    try {
-      if (!supabase) {
-        return { data: null, error: new Error('Supabase não configurado') };
-      }
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        return { data: null, error: new Error('Not authenticated') };
-      }
-
-      const { data, error } = await supabase
-        .from('user_consents')
-        .select('*')
-        .eq('user_id', user.id)
-        .is('revoked_at', null)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
-
-      if (error && error.code !== 'PGRST116') { // PGRST116 = no rows
-        return { data: null, error };
-      }
-
-      return { data: data as UserConsent | null, error: null };
-    } catch (e) {
-      return { data: null, error: e as Error };
-    }
+    return { data: null, error: null };
   },
 
-  /**
-   * Give consent with specific permissions
-   */
-  async giveConsent(consent: {
+  async giveConsent(_consent: {
     version: string;
     termsAccepted: boolean;
     privacyAccepted: boolean;
     aiDataSharing: boolean;
     marketingEmails: boolean;
   }): Promise<{ data: UserConsent | null; error: Error | null }> {
-    try {
-      if (!supabase) {
-        return { data: null, error: new Error('Supabase não configurado') };
-      }
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        return { data: null, error: new Error('Not authenticated') };
-      }
-
-      // First revoke any existing consent
-      await supabase
-        .from('user_consents')
-        .update({ revoked_at: new Date().toISOString() })
-        .eq('user_id', user.id)
-        .is('revoked_at', null);
-
-      // Create new consent record
-      const { data, error } = await supabase
-        .from('user_consents')
-        .insert({
-          user_id: user.id,
-          version: consent.version,
-          terms_accepted: consent.termsAccepted,
-          privacy_accepted: consent.privacyAccepted,
-          ai_data_sharing: consent.aiDataSharing,
-          marketing_emails: consent.marketingEmails,
-          user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
-        })
-        .select()
-        .single();
-
-      if (error) return { data: null, error };
-      return { data: data as UserConsent, error: null };
-    } catch (e) {
-      return { data: null, error: e as Error };
-    }
+    return { data: null, error: new Error('Use API route or Prisma service directly') };
   },
 
-  /**
-   * Revoke all AI consent
-   * LGPD Art. 8º §5 - Right to revoke consent
-   */
   async revokeAIConsent(): Promise<{ error: Error | null }> {
-    try {
-      if (!supabase) {
-        return { error: new Error('Supabase não configurado') };
-      }
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        return { error: new Error('Not authenticated') };
-      }
-
-      // Get current consent
-      const { data: currentConsent } = await supabase
-        .from('user_consents')
-        .select('*')
-        .eq('user_id', user.id)
-        .is('revoked_at', null)
-        .single();
-
-      if (!currentConsent) {
-        return { error: new Error('No active consent found') };
-      }
-
-      // Revoke current consent
-      await supabase
-        .from('user_consents')
-        .update({ revoked_at: new Date().toISOString() })
-        .eq('id', currentConsent.id);
-
-      // Create new consent without AI data sharing
-      const { error } = await supabase
-        .from('user_consents')
-        .insert({
-          user_id: user.id,
-          version: currentConsent.version,
-          terms_accepted: currentConsent.terms_accepted,
-          privacy_accepted: currentConsent.privacy_accepted,
-          ai_data_sharing: false, // Revoked
-          marketing_emails: currentConsent.marketing_emails,
-          user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
-        });
-
-      if (error) return { error };
-
-      // Log revocation to audit
-      await supabase.from('audit_logs').insert({
-        user_id: user.id,
-        action: 'REVOKE_AI_CONSENT',
-        resource_type: 'consent',
-        resource_id: user.id,
-        severity: 'info',
-      });
-
-      return { error: null };
-    } catch (e) {
-      return { error: e as Error };
-    }
+    return { error: new Error('Use API route or Prisma service directly') };
   },
 
-  /**
-   * Revoke all consent (full opt-out)
-   */
   async revokeAllConsent(): Promise<{ error: Error | null }> {
-    try {
-      if (!supabase) {
-        return { error: new Error('Supabase não configurado') };
-      }
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        return { error: new Error('Not authenticated') };
-      }
-
-      const { error } = await supabase
-        .from('user_consents')
-        .update({ revoked_at: new Date().toISOString() })
-        .eq('user_id', user.id)
-        .is('revoked_at', null);
-
-      if (error) return { error };
-
-      // Log full revocation to audit
-      await supabase.from('audit_logs').insert({
-        user_id: user.id,
-        action: 'REVOKE_ALL_CONSENT',
-        resource_type: 'consent',
-        resource_id: user.id,
-        severity: 'warning',
-      });
-
-      return { error: null };
-    } catch (e) {
-      return { error: e as Error };
-    }
+    return { error: new Error('Use API route or Prisma service directly') };
   },
 
-  /**
-   * Check if user has given specific consent
-   */
-  async hasConsent(type: 'terms' | 'privacy' | 'ai' | 'marketing'): Promise<boolean> {
-    const { data: consent } = await this.getCurrentConsent();
-    if (!consent) return false;
-
-    switch (type) {
-      case 'terms':
-        return consent.terms_accepted;
-      case 'privacy':
-        return consent.privacy_accepted;
-      case 'ai':
-        return consent.ai_data_sharing;
-      case 'marketing':
-        return consent.marketing_emails;
-      default:
-        return false;
-    }
+  async hasConsent(_type: 'terms' | 'privacy' | 'ai' | 'marketing'): Promise<boolean> {
+    return false;
   },
 
-  /**
-   * Get consent history for user
-   */
   async getConsentHistory(): Promise<{ data: UserConsent[] | null; error: Error | null }> {
-    try {
-      if (!supabase) {
-        return { data: null, error: new Error('Supabase não configurado') };
-      }
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        return { data: null, error: new Error('Not authenticated') };
-      }
-
-      const { data, error } = await supabase
-        .from('user_consents')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
-
-      if (error) return { data: null, error };
-      return { data: data as UserConsent[], error: null };
-    } catch (e) {
-      return { data: null, error: e as Error };
-    }
+    return { data: null, error: null };
   },
 };
 

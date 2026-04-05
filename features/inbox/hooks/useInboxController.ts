@@ -22,6 +22,7 @@ import { useHiddenSuggestionIds, useRecordSuggestionInteraction } from '@/lib/qu
 import { SuggestionType } from '@/lib/supabase/aiSuggestions';
 import { isDebugMode, generateFakeContacts, fakeDeal } from '@/lib/debug';
 import { supabase } from '@/lib/supabase/client';
+// supabase is now a noop shim - seedInboxDebug updates will use it as-is (data won't persist)
 
 // Tipos para sugestões de IA (BIRTHDAY removido - será implementado em widget separado)
 export type AISuggestionType = 'UPSELL' | 'RESCUE' | 'STALLED';

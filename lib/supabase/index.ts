@@ -1,7 +1,8 @@
-// Supabase Services - Export all
-export { boardsService, boardStagesService } from './boards';
-export { contactsService, companiesService } from './contacts';
-export { dealsService } from './deals';
-export { activitiesService } from './activities';
-export { productsService } from './products';
-export { settingsService, lifecycleStagesService } from './settings';
+// Re-export from Prisma-based services (migration shim)
+// All imports from '@/lib/supabase' now use Prisma instead of Supabase client
+export { boardsService, boardStagesService } from '../services/boards'
+export { contactsService, companiesService } from '../services/contacts'
+export { dealsService } from '../services/deals'
+export { activitiesService } from '../services/activities'
+export { productsService } from '../services/products'
+export { settingsService, lifecycleStagesService } from '../services/settings'

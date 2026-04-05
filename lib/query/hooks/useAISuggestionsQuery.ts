@@ -24,7 +24,7 @@ export const useHiddenSuggestionIds = () => {
     return useQuery({
         queryKey: suggestionKeys.hidden(),
         queryFn: async () => {
-            const { data, error } = await aiSuggestionsService.getHiddenSuggestionIds();
+            const { data, error } = await aiSuggestionsService.getHiddenSuggestionIds(user!.id);
             if (error) throw error;
             return data;
         },
@@ -38,6 +38,7 @@ export const useHiddenSuggestionIds = () => {
  */
 export const useRecordSuggestionInteraction = () => {
     const queryClient = useQueryClient();
+    const { user } = useAuth();
 
     return useMutation({
         mutationFn: async ({
@@ -54,6 +55,7 @@ export const useRecordSuggestionInteraction = () => {
             snoozedUntil?: Date;
         }) => {
             const { data, error } = await aiSuggestionsService.recordInteraction(
+                user!.id,
                 suggestionType,
                 entityType,
                 entityId,
@@ -71,7 +73,7 @@ export const useRecordSuggestionInteraction = () => {
 
             // Add to hidden set immediately
             const newHidden = new Set(previousHidden || []);
-            newHidden.add(`${suggestionType.toLowerCase()}-${entityId}`);
+            newHidden.add(`${suggestionType}-${entityId}`);
             queryClient.setQueryData(suggestionKeys.hidden(), newHidden);
 
             return { previousHidden };
@@ -94,6 +96,7 @@ export const useRecordSuggestionInteraction = () => {
  */
 export const useClearSnooze = () => {
     const queryClient = useQueryClient();
+    const { user } = useAuth();
 
     return useMutation({
         mutationFn: async ({
@@ -103,7 +106,7 @@ export const useClearSnooze = () => {
             suggestionType: SuggestionType;
             entityId: string;
         }) => {
-            const { error } = await aiSuggestionsService.clearSnooze(suggestionType, entityId);
+            const { error } = await aiSuggestionsService.clearSnooze(user!.id, suggestionType, entityId);
             if (error) throw error;
         },
         onSettled: () => {

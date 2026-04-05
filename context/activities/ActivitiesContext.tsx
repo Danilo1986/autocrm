@@ -72,7 +72,7 @@ export const ActivitiesProvider: React.FC<{ children: ReactNode }> = ({ children
       // Don't await invalidations — awaiting can block UI flows until heavy refetches finish.
       void queryClient.invalidateQueries({ queryKey: queryKeys.activities.all });
 
-      return data;
+      return data as unknown as Activity;
     },
     [profile?.organization_id, queryClient]
   );

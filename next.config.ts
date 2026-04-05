@@ -1,9 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Otimiza imports de bibliotecas com barrel files (index.js que re-exporta tudo)
-  // Isso evita carregar módulos não utilizados, reduzindo o bundle em 15-25KB
-  // Ref: https://vercel.com/blog/how-we-optimized-package-imports-in-next-js
+  output: 'standalone',
   experimental: {
     optimizePackageImports: [
       'lucide-react',      // 1500+ ícones, carrega só os usados

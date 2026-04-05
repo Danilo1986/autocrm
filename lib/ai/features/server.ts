@@ -1,17 +1,11 @@
 import 'server-only';
 
-import type { SupabaseClient } from '@supabase/supabase-js';
-
 /**
- * Função pública `isAIFeatureEnabled` do projeto.
- *
- * @param {SupabaseClient<any, "public", "public", any, any>} supabase - Parâmetro `supabase`.
- * @param {string} organizationId - Identificador do recurso.
- * @param {string} key - Parâmetro `key`.
- * @returns {Promise<boolean>} Retorna um valor do tipo `Promise<boolean>`.
+ * Checks if a specific AI feature is enabled for the organization.
+ * Now accepts a generic supabase-like shim (from server.ts) instead of SupabaseClient.
  */
 export async function isAIFeatureEnabled(
-  supabase: SupabaseClient,
+  supabase: any,
   organizationId: string,
   key: string
 ): Promise<boolean> {
@@ -33,4 +27,3 @@ export async function isAIFeatureEnabled(
   // Default: enabled when missing
   return data?.enabled !== false;
 }
-

@@ -192,7 +192,7 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
 
     try {
       // Preferências por usuário (mantidas em user_settings)
-      const { data: settings } = await settingsService.get();
+      const { data: settings } = await settingsService.get(profile.id);
       if (settings) {
         setAiThinkingState(settings.aiThinking);
         setAiSearchState(settings.aiSearch);
@@ -384,11 +384,12 @@ export const SettingsProvider: React.FC<{ children: ReactNode }> = ({ children }
 
   // AI Config setters (persist to Supabase)
   const updateSettings = useCallback(async (updates: Record<string, unknown>) => {
-    const { error: updateError } = await settingsService.update(updates);
+    if (!profile) return;
+    const { error: updateError } = await settingsService.update(profile.id, updates);
     if (updateError) {
       setError(updateError.message);
     }
-  }, []);
+  }, [profile]);
 
   const updateOrgAISettings = useCallback(async (updates: Record<string, unknown>) => {
     const res = await fetch('/api/settings/ai', {

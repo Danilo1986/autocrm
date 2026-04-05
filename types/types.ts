@@ -176,11 +176,11 @@ export interface Contact {
 // ITEM 3: Produtos e Serviços
 export interface Product {
   id: string;
-  organizationId?: OrganizationId; // Tenant FK (for RLS) - optional during migration
+  organizationId?: OrganizationId | null; // Tenant FK (for RLS) - optional during migration
   name: string;
-  description?: string;
+  description?: string | null;
   price: number;
-  sku?: string;
+  sku?: string | null;
   /** Se está ativo no catálogo (itens inativos não devem aparecer no dropdown do deal). */
   active?: boolean;
 }

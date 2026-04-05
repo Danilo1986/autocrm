@@ -2,7 +2,7 @@
 // DELETE THIS FILE BEFORE PRODUCTION!
 
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createStaticAdminClient as createClient } from '@/lib/supabase/server';
 import type { CRMCallOptions } from '@/types/ai';
 import { isAllowedOrigin } from '@/lib/security/sameOrigin';
 
@@ -43,7 +43,7 @@ export async function POST(req: Request) {
         );
     }
 
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    const supabase = createClient();
     const body = await req.json().catch(() => null);
 
     if (!body || typeof body !== 'object') {

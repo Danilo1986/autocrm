@@ -50,6 +50,7 @@ testsprite_tests/tmp/
 !.env.example
 !.env.sample
 !.env.template
+!.env.docker
 
 # vercel
 .vercel

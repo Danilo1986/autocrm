@@ -1,0 +1,1021 @@
+// =============================================================================
+// NossoCRM - Prisma Schema
+// Migrated from Supabase SQL schema (20251201000000_schema_init.sql)
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgcrypto, uuidOssp(map: "uuid-ossp")]
+}
+
+// =============================================================================
+// NextAuth.js tables
+// =============================================================================
+
+model Account {
+  id                String  @id @default(uuid()) @db.Uuid
+  userId            String  @map("user_id") @db.Uuid
+  type              String
+  provider          String
+  providerAccountId String  @map("provider_account_id")
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(uuid()) @db.Uuid
+  sessionToken String   @unique @map("session_token")
+  userId       String   @map("user_id") @db.Uuid
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// =============================================================================
+// Core CRM tables
+// =============================================================================
+
+/// NextAuth User + replaces auth.users from Supabase
+model User {
+  id            String    @id @default(uuid()) @db.Uuid
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime? @map("email_verified")
+  image         String?
+  password      String?   // bcrypt hash (Credentials provider)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  accounts Account[]
+  sessions Session[]
+  profile  Profile?
+
+  // Relations for tables that previously referenced auth.users
+  userConsents            UserConsent[]
+  auditLogs               AuditLog[]
+  securityAlertsUser      SecurityAlert[]       @relation("SecurityAlertUser")
+  securityAlertsAck       SecurityAlert[]       @relation("SecurityAlertAcknowledger")
+  aiSuggestionInteractions AiSuggestionInteraction[]
+
+  @@map("users")
+}
+
+// -----------------------------------------------------------------------------
+// 1. ORGANIZATIONS
+// -----------------------------------------------------------------------------
+
+model Organization {
+  id        String    @id @default(uuid()) @db.Uuid
+  name      String
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  settings              OrganizationSettings?
+  profiles              Profile[]
+  boards                Board[]
+  boardStages           BoardStage[]
+  contacts              Contact[]
+  crmCompanies          CrmCompany[]
+  products              Product[]
+  deals                 Deal[]
+  dealItems             DealItem[]
+  activities            Activity[]
+  tags                  Tag[]
+  customFieldDefinitions CustomFieldDefinition[]
+  leads                 Lead[]
+  organizationInvites   OrganizationInvite[]
+  systemNotifications   SystemNotification[]
+  auditLogs             AuditLog[]
+  securityAlerts        SecurityAlert[]
+  apiKeys               ApiKey[]
+  aiPromptTemplates     AiPromptTemplate[]
+  aiFeatureFlags        AiFeatureFlag[]
+  integrationInbound    IntegrationInboundSource[]
+  integrationOutbound   IntegrationOutboundEndpoint[]
+  webhookEventsIn       WebhookEventIn[]
+  webhookEventsOut      WebhookEventOut[]
+  webhookDeliveries     WebhookDelivery[]
+
+  @@map("organizations")
+}
+
+// -----------------------------------------------------------------------------
+// 1.1 ORGANIZATION_SETTINGS
+// -----------------------------------------------------------------------------
+
+model OrganizationSettings {
+  organizationId String  @id @map("organization_id") @db.Uuid
+  aiProvider     String  @default("google") @map("ai_provider")
+  aiModel        String  @default("gemini-2.5-flash") @map("ai_model")
+  aiGoogleKey    String? @map("ai_google_key")
+  aiOpenaiKey    String? @map("ai_openai_key")
+  aiAnthropicKey String? @map("ai_anthropic_key")
+  aiEnabled      Boolean @default(true) @map("ai_enabled")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("organization_settings")
+}
+
+// -----------------------------------------------------------------------------
+// 2. PROFILES (extends User)
+// -----------------------------------------------------------------------------
+
+model Profile {
+  id             String    @id @db.Uuid
+  email          String?
+  name           String?
+  avatar         String?
+  role           String    @default("user")
+  organizationId String?   @map("organization_id") @db.Uuid
+  firstName      String?   @map("first_name")
+  lastName       String?   @map("last_name")
+  nickname       String?
+  phone          String?
+  avatarUrl      String?   @map("avatar_url")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  user         User          @relation(fields: [id], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // Ownership relations
+  ownedBoards       Board[]       @relation("BoardOwner")
+  ownedContacts     Contact[]     @relation("ContactOwner")
+  ownedCompanies    CrmCompany[]  @relation("CompanyOwner")
+  ownedProducts     Product[]     @relation("ProductOwner")
+  ownedDeals        Deal[]        @relation("DealOwner")
+  ownedActivities   Activity[]    @relation("ActivityOwner")
+  ownedLeads        Lead[]        @relation("LeadOwner")
+  userSettings      UserSettings?
+  dealNotes         DealNote[]
+  dealFiles         DealFile[]
+  quickScripts      QuickScript[]
+  aiConversations   AiConversation[]
+  aiDecisions       AiDecision[]
+  aiAudioNotes      AiAudioNote[]
+  createdInvites    OrganizationInvite[] @relation("InviteCreator")
+  createdApiKeys    ApiKey[]
+  createdPrompts    AiPromptTemplate[]
+
+  @@map("profiles")
+}
+
+// -----------------------------------------------------------------------------
+// 3. LIFECYCLE_STAGES
+// -----------------------------------------------------------------------------
+
+model LifecycleStage {
+  id        String   @id
+  name      String
+  color     String
+  order     Int
+  isDefault Boolean  @default(false) @map("is_default")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("lifecycle_stages")
+}
+
+// -----------------------------------------------------------------------------
+// 4. CRM_COMPANIES
+// -----------------------------------------------------------------------------
+
+model CrmCompany {
+  id             String    @id @default(uuid()) @db.Uuid
+  name           String
+  industry       String?
+  website        String?
+  deletedAt      DateTime? @map("deleted_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  ownerId        String?   @map("owner_id") @db.Uuid
+  organizationId String?   @map("organization_id") @db.Uuid
+
+  owner        Profile?      @relation("CompanyOwner", fields: [ownerId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contacts     Contact[]
+  deals        Deal[]
+  activities   Activity[]
+
+  @@map("crm_companies")
+}
+
+// -----------------------------------------------------------------------------
+// 5. BOARDS (Kanban)
+// -----------------------------------------------------------------------------
+
+model Board {
+  id                    String    @id @default(uuid()) @db.Uuid
+  key                   String?
+  name                  String
+  description           String?
+  type                  String    @default("SALES")
+  isDefault             Boolean   @default(false) @map("is_default")
+  template              String?
+  linkedLifecycleStage  String?   @map("linked_lifecycle_stage")
+  nextBoardId           String?   @map("next_board_id") @db.Uuid
+  goalDescription       String?   @map("goal_description")
+  goalKpi               String?   @map("goal_kpi")
+  goalTargetValue       String?   @map("goal_target_value")
+  goalType              String?   @map("goal_type")
+  agentName             String?   @map("agent_name")
+  agentRole             String?   @map("agent_role")
+  agentBehavior         String?   @map("agent_behavior")
+  entryTrigger          String?   @map("entry_trigger")
+  automationSuggestions String[]  @map("automation_suggestions")
+  position              Int       @default(0)
+  deletedAt             DateTime? @map("deleted_at")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt @map("updated_at")
+  ownerId               String?   @map("owner_id") @db.Uuid
+  organizationId        String?   @map("organization_id") @db.Uuid
+  defaultProductId      String?   @map("default_product_id") @db.Uuid
+  wonStageId            String?   @map("won_stage_id") @db.Uuid
+  lostStageId           String?   @map("lost_stage_id") @db.Uuid
+  wonStayInStage        Boolean   @default(false) @map("won_stay_in_stage")
+  lostStayInStage       Boolean   @default(false) @map("lost_stay_in_stage")
+
+  nextBoard      Board?        @relation("BoardChain", fields: [nextBoardId], references: [id])
+  previousBoards Board[]       @relation("BoardChain")
+  owner          Profile?      @relation("BoardOwner", fields: [ownerId], references: [id])
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  defaultProduct Product?      @relation("BoardDefaultProduct", fields: [defaultProductId], references: [id])
+  wonStage       BoardStage?   @relation("BoardWonStage", fields: [wonStageId], references: [id])
+  lostStage      BoardStage?   @relation("BoardLostStage", fields: [lostStageId], references: [id])
+
+  stages         BoardStage[] @relation("BoardStages")
+  deals          Deal[]
+  userSettings   UserSettings[]
+  inboundSources IntegrationInboundSource[]
+
+  @@unique([organizationId, key])
+  @@map("boards")
+}
+
+// -----------------------------------------------------------------------------
+// 6. BOARD_STAGES
+// -----------------------------------------------------------------------------
+
+model BoardStage {
+  id                   String    @id @default(uuid()) @db.Uuid
+  boardId              String?   @map("board_id") @db.Uuid
+  name                 String
+  label                String?
+  color                String?
+  order                Int
+  isDefault            Boolean   @default(false) @map("is_default")
+  linkedLifecycleStage String?   @map("linked_lifecycle_stage")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  organizationId       String?   @map("organization_id") @db.Uuid
+
+  board        Board?        @relation("BoardStages", fields: [boardId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  deals              Deal[]
+  boardsWonStage     Board[]  @relation("BoardWonStage")
+  boardsLostStage    Board[]  @relation("BoardLostStage")
+  inboundSources     IntegrationInboundSource[] @relation("InboundEntryStage")
+  webhookEventsFrom  WebhookEventOut[] @relation("WebhookFromStage")
+  webhookEventsTo    WebhookEventOut[] @relation("WebhookToStage")
+
+  @@map("board_stages")
+}
+
+// -----------------------------------------------------------------------------
+// 7. CONTACTS
+// -----------------------------------------------------------------------------
+
+model Contact {
+  id               String    @id @default(uuid()) @db.Uuid
+  name             String
+  email            String?
+  phone            String?
+  role             String?
+  companyName       String?   @map("company_name")
+  clientCompanyId  String?   @map("client_company_id") @db.Uuid
+  avatar           String?
+  notes            String?
+  status           String    @default("ACTIVE")
+  stage            String    @default("LEAD")
+  source           String?
+  birthDate        DateTime? @map("birth_date") @db.Date
+  lastInteraction  DateTime? @map("last_interaction")
+  lastPurchaseDate DateTime? @map("last_purchase_date") @db.Date
+  totalValue       Decimal   @default(0) @map("total_value")
+  deletedAt        DateTime? @map("deleted_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  ownerId          String?   @map("owner_id") @db.Uuid
+  organizationId   String?   @map("organization_id") @db.Uuid
+
+  clientCompany CrmCompany?   @relation(fields: [clientCompanyId], references: [id])
+  owner         Profile?      @relation("ContactOwner", fields: [ownerId], references: [id])
+  organization  Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  deals        Deal[]
+  activities   Activity[]
+  aiDecisions  AiDecision[]
+  aiAudioNotes AiAudioNote[]
+  webhookEventsInContact WebhookEventIn[] @relation("WebhookCreatedContact")
+
+  @@map("contacts")
+}
+
+// -----------------------------------------------------------------------------
+// 8. PRODUCTS
+// -----------------------------------------------------------------------------
+
+model Product {
+  id             String    @id @default(uuid()) @db.Uuid
+  name           String
+  description    String?
+  price          Decimal   @default(0)
+  sku            String?
+  active         Boolean   @default(true)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+  ownerId        String?   @map("owner_id") @db.Uuid
+  organizationId String?   @map("organization_id") @db.Uuid
+
+  owner        Profile?      @relation("ProductOwner", fields: [ownerId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  dealItems     DealItem[]
+  boardDefaults Board[] @relation("BoardDefaultProduct")
+
+  @@map("products")
+}
+
+// -----------------------------------------------------------------------------
+// 9. DEALS
+// -----------------------------------------------------------------------------
+
+model Deal {
+  id                  String    @id @default(uuid()) @db.Uuid
+  title               String
+  value               Decimal   @default(0)
+  probability         Int       @default(0)
+  status              String?
+  priority            String    @default("medium")
+  boardId             String?   @map("board_id") @db.Uuid
+  stageId             String?   @map("stage_id") @db.Uuid
+  contactId           String?   @map("contact_id") @db.Uuid
+  clientCompanyId     String?   @map("client_company_id") @db.Uuid
+  aiSummary           String?   @map("ai_summary")
+  lossReason          String?   @map("loss_reason")
+  tags                String[]  @default([])
+  lastStageChangeDate DateTime? @map("last_stage_change_date")
+  customFields        Json      @default("{}") @map("custom_fields")
+  isWon               Boolean   @default(false) @map("is_won")
+  isLost              Boolean   @default(false) @map("is_lost")
+  closedAt            DateTime? @map("closed_at")
+  deletedAt           DateTime? @map("deleted_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+  ownerId             String?   @map("owner_id") @db.Uuid
+  organizationId      String    @map("organization_id") @db.Uuid
+
+  board          Board?        @relation(fields: [boardId], references: [id])
+  stage          BoardStage?   @relation(fields: [stageId], references: [id])
+  contact        Contact?      @relation(fields: [contactId], references: [id])
+  clientCompany  CrmCompany?   @relation(fields: [clientCompanyId], references: [id])
+  owner          Profile?      @relation("DealOwner", fields: [ownerId], references: [id])
+  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  dealItems    DealItem[]
+  activities   Activity[]
+  dealNotes    DealNote[]
+  dealFiles    DealFile[]
+  aiDecisions  AiDecision[]
+  aiAudioNotes AiAudioNote[]
+  webhookEventsInDeal  WebhookEventIn[]  @relation("WebhookCreatedDeal")
+  webhookEventsOut     WebhookEventOut[]
+
+  @@map("deals")
+}
+
+// -----------------------------------------------------------------------------
+// 10. DEAL_ITEMS
+// -----------------------------------------------------------------------------
+
+model DealItem {
+  id             String   @id @default(uuid()) @db.Uuid
+  dealId         String?  @map("deal_id") @db.Uuid
+  productId      String?  @map("product_id") @db.Uuid
+  name           String
+  quantity       Int      @default(1)
+  price          Decimal  @default(0)
+  createdAt      DateTime @default(now()) @map("created_at")
+  organizationId String?  @map("organization_id") @db.Uuid
+
+  deal         Deal?         @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  product      Product?      @relation(fields: [productId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("deal_items")
+}
+
+// -----------------------------------------------------------------------------
+// 11. ACTIVITIES
+// -----------------------------------------------------------------------------
+
+model Activity {
+  id                    String    @id @default(uuid()) @db.Uuid
+  title                 String
+  description           String?
+  type                  String
+  date                  DateTime
+  completed             Boolean   @default(false)
+  dealId                String?   @map("deal_id") @db.Uuid
+  contactId             String?   @map("contact_id") @db.Uuid
+  clientCompanyId       String?   @map("client_company_id") @db.Uuid
+  participantContactIds String[]  @map("participant_contact_ids") @db.Uuid
+  deletedAt             DateTime? @map("deleted_at")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  ownerId               String?   @map("owner_id") @db.Uuid
+  organizationId        String?   @map("organization_id") @db.Uuid
+
+  deal          Deal?         @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  contact       Contact?      @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  clientCompany CrmCompany?   @relation(fields: [clientCompanyId], references: [id])
+  owner         Profile?      @relation("ActivityOwner", fields: [ownerId], references: [id])
+  organization  Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  aiAudioNotes AiAudioNote[]
+
+  @@map("activities")
+}
+
+// -----------------------------------------------------------------------------
+// 12. TAGS
+// -----------------------------------------------------------------------------
+
+model Tag {
+  id             String   @id @default(uuid()) @db.Uuid
+  name           String
+  color          String   @default("bg-gray-500")
+  createdAt      DateTime @default(now()) @map("created_at")
+  organizationId String?  @map("organization_id") @db.Uuid
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([name, organizationId])
+  @@map("tags")
+}
+
+// -----------------------------------------------------------------------------
+// 13. CUSTOM_FIELD_DEFINITIONS
+// -----------------------------------------------------------------------------
+
+model CustomFieldDefinition {
+  id             String   @id @default(uuid()) @db.Uuid
+  key            String
+  label          String
+  type           String
+  options        String[]
+  entityType     String   @default("deal") @map("entity_type")
+  createdAt      DateTime @default(now()) @map("created_at")
+  organizationId String?  @map("organization_id") @db.Uuid
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([key, organizationId])
+  @@map("custom_field_definitions")
+}
+
+// -----------------------------------------------------------------------------
+// 14. LEADS
+// -----------------------------------------------------------------------------
+
+model Lead {
+  id                  String    @id @default(uuid()) @db.Uuid
+  name                String
+  email               String?
+  companyName         String?   @map("company_name")
+  role                String?
+  source              String?
+  status              String    @default("NEW")
+  notes               String?
+  createdAt           DateTime  @default(now()) @map("created_at")
+  convertedToContactId String?  @map("converted_to_contact_id") @db.Uuid
+  ownerId             String?   @map("owner_id") @db.Uuid
+  organizationId      String?   @map("organization_id") @db.Uuid
+
+  owner        Profile?      @relation("LeadOwner", fields: [ownerId], references: [id])
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("leads")
+}
+
+// -----------------------------------------------------------------------------
+// 15. USER_SETTINGS
+// -----------------------------------------------------------------------------
+
+model UserSettings {
+  id                  String   @id @default(uuid()) @db.Uuid
+  userId              String   @unique @map("user_id") @db.Uuid
+  aiProvider          String   @default("google") @map("ai_provider")
+  aiApiKey            String?  @map("ai_api_key")
+  aiModel             String   @default("gemini-2.5-flash") @map("ai_model")
+  aiThinking          Boolean  @default(true) @map("ai_thinking")
+  aiSearch            Boolean  @default(true) @map("ai_search")
+  aiAnthropicCaching  Boolean  @default(false) @map("ai_anthropic_caching")
+  aiGoogleKey         String?  @map("ai_google_key")
+  aiOpenaiKey         String?  @map("ai_openai_key")
+  aiAnthropicKey      String?  @map("ai_anthropic_key")
+  darkMode            Boolean  @default(true) @map("dark_mode")
+  defaultRoute        String   @default("/boards") @map("default_route")
+  activeBoardId       String?  @map("active_board_id") @db.Uuid
+  inboxViewMode       String   @default("list") @map("inbox_view_mode")
+  onboardingCompleted Boolean  @default(false) @map("onboarding_completed")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  user        Profile @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeBoard Board?  @relation(fields: [activeBoardId], references: [id])
+
+  @@map("user_settings")
+}
+
+// -----------------------------------------------------------------------------
+// 16. AI_CONVERSATIONS
+// -----------------------------------------------------------------------------
+
+model AiConversation {
+  id              String   @id @default(uuid()) @db.Uuid
+  userId          String?  @map("user_id") @db.Uuid
+  conversationKey String   @map("conversation_key")
+  messages        Json     @default("[]")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user Profile? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, conversationKey])
+  @@map("ai_conversations")
+}
+
+// -----------------------------------------------------------------------------
+// 17. AI_DECISIONS
+// -----------------------------------------------------------------------------
+
+model AiDecision {
+  id              String    @id @default(uuid()) @db.Uuid
+  userId          String?   @map("user_id") @db.Uuid
+  dealId          String?   @map("deal_id") @db.Uuid
+  contactId       String?   @map("contact_id") @db.Uuid
+  decisionType    String    @map("decision_type")
+  priority        String    @default("medium")
+  title           String
+  description     String?
+  suggestedAction Json?     @map("suggested_action")
+  status          String    @default("pending")
+  snoozedUntil    DateTime? @map("snoozed_until")
+  processedAt     DateTime? @map("processed_at")
+  aiReasoning     String?   @map("ai_reasoning")
+  confidenceScore Decimal?  @map("confidence_score") @db.Decimal(3, 2)
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  user    Profile? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deal    Deal?    @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  contact Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@map("ai_decisions")
+}
+
+// -----------------------------------------------------------------------------
+// 18. AI_AUDIO_NOTES
+// -----------------------------------------------------------------------------
+
+model AiAudioNote {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String?  @map("user_id") @db.Uuid
+  dealId            String?  @map("deal_id") @db.Uuid
+  contactId         String?  @map("contact_id") @db.Uuid
+  audioUrl          String?  @map("audio_url")
+  durationSeconds   Int?     @map("duration_seconds")
+  transcription     String
+  sentiment         String?
+  nextAction        Json?    @map("next_action")
+  activityCreatedId String?  @map("activity_created_id") @db.Uuid
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  user              Profile?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deal              Deal?     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  contact           Contact?  @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  activityCreated   Activity? @relation(fields: [activityCreatedId], references: [id])
+
+  @@map("ai_audio_notes")
+}
+
+// -----------------------------------------------------------------------------
+// 19. ORGANIZATION_INVITES
+// -----------------------------------------------------------------------------
+
+model OrganizationInvite {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String?   @map("organization_id") @db.Uuid
+  email          String?
+  role           String    @default("vendedor")
+  token          String    @default(uuid()) @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at")
+  expiresAt      DateTime? @map("expires_at")
+  usedAt         DateTime? @map("used_at")
+  createdBy      String?   @map("created_by") @db.Uuid
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  creator      Profile?      @relation("InviteCreator", fields: [createdBy], references: [id])
+
+  @@map("organization_invites")
+}
+
+// -----------------------------------------------------------------------------
+// 20. SYSTEM_NOTIFICATIONS
+// -----------------------------------------------------------------------------
+
+model SystemNotification {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String?   @map("organization_id") @db.Uuid
+  type           String
+  title          String
+  message        String
+  link           String?
+  severity       String    @default("medium")
+  readAt         DateTime? @map("read_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("system_notifications")
+}
+
+// -----------------------------------------------------------------------------
+// 21. AI_SUGGESTION_INTERACTIONS
+// -----------------------------------------------------------------------------
+
+model AiSuggestionInteraction {
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  suggestionType String    @map("suggestion_type") // UPSELL, STALLED, BIRTHDAY, RESCUE
+  entityType     String    @map("entity_type") // deal, contact
+  entityId       String    @map("entity_id") @db.Uuid
+  action         String    // ACCEPTED, DISMISSED, SNOOZED
+  snoozedUntil   DateTime? @map("snoozed_until")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, suggestionType, entityId])
+  @@index([userId])
+  @@index([entityType, entityId])
+  @@map("ai_suggestion_interactions")
+}
+
+// -----------------------------------------------------------------------------
+// 22. AI_PROMPT_TEMPLATES
+// -----------------------------------------------------------------------------
+
+model AiPromptTemplate {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  key            String
+  version        Int      @default(1)
+  content        String
+  isActive       Boolean  @default(true) @map("is_active")
+  createdBy      String?  @map("created_by") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  creator      Profile?     @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, key, version])
+  @@index([organizationId, key])
+  @@index([organizationId, key, isActive])
+  @@map("ai_prompt_templates")
+}
+
+// -----------------------------------------------------------------------------
+// 23. AI_FEATURE_FLAGS
+// -----------------------------------------------------------------------------
+
+model AiFeatureFlag {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  key            String
+  enabled        Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, key])
+  @@index([organizationId])
+  @@map("ai_feature_flags")
+}
+
+// =============================================================================
+// SECURITY TABLES
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// 24. RATE_LIMITS
+// -----------------------------------------------------------------------------
+
+model RateLimit {
+  id         String   @id @default(uuid()) @db.Uuid
+  identifier String
+  endpoint   String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([identifier, endpoint, createdAt(sort: Desc)])
+  @@map("rate_limits")
+}
+
+// -----------------------------------------------------------------------------
+// 25. USER_CONSENTS (LGPD)
+// -----------------------------------------------------------------------------
+
+model UserConsent {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  consentType String    @map("consent_type") // terms, privacy, marketing, analytics, data_processing, AI_CONSENT
+  version     String
+  consentedAt DateTime  @default(now()) @map("consented_at")
+  ipAddress   String?   @map("ip_address")
+  userAgent   String?   @map("user_agent")
+  revokedAt   DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_consents")
+}
+
+// -----------------------------------------------------------------------------
+// 26. AUDIT_LOGS
+// -----------------------------------------------------------------------------
+
+model AuditLog {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String?  @map("user_id") @db.Uuid
+  organizationId String?  @map("organization_id") @db.Uuid
+  action         String
+  resourceType   String   @map("resource_type")
+  resourceId     String?  @map("resource_id") @db.Uuid
+  details        Json     @default("{}")
+  ipAddress      String?  @map("ip_address")
+  userAgent      String?  @map("user_agent")
+  createdAt      DateTime @default(now()) @map("created_at")
+  severity       String   @default("info") // debug, info, warning, error, critical
+
+  user         User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+}
+
+// -----------------------------------------------------------------------------
+// 27. SECURITY_ALERTS
+// -----------------------------------------------------------------------------
+
+model SecurityAlert {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String?   @map("organization_id") @db.Uuid
+  alertType      String    @map("alert_type") @db.VarChar(50)
+  severity       String    @default("warning") @db.VarChar(20)
+  title          String    @db.VarChar(255)
+  description    String?
+  details        Json?
+  userId         String?   @map("user_id") @db.Uuid
+  acknowledgedAt DateTime? @map("acknowledged_at")
+  acknowledgedBy String?   @map("acknowledged_by") @db.Uuid
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User?         @relation("SecurityAlertUser", fields: [userId], references: [id], onDelete: SetNull)
+  acknowledger User?         @relation("SecurityAlertAcknowledger", fields: [acknowledgedBy], references: [id], onDelete: SetNull)
+
+  @@map("security_alerts")
+}
+
+// =============================================================================
+// API KEYS
+// =============================================================================
+
+model ApiKey {
+  id             String    @id @default(uuid()) @db.Uuid
+  organizationId String    @map("organization_id") @db.Uuid
+  name           String
+  keyPrefix      String    @map("key_prefix")
+  keyHash        String    @map("key_hash")
+  createdBy      String?   @map("created_by") @db.Uuid
+  revokedAt      DateTime? @map("revoked_at")
+  lastUsedAt     DateTime? @map("last_used_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  creator      Profile?     @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@map("api_keys")
+}
+
+// =============================================================================
+// COCKPIT FEATURES
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// DEAL_NOTES
+// -----------------------------------------------------------------------------
+
+model DealNote {
+  id        String   @id @default(uuid()) @db.Uuid
+  dealId    String   @map("deal_id") @db.Uuid
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  createdBy String?  @map("created_by") @db.Uuid
+
+  deal    Deal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  creator Profile? @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+
+  @@index([dealId])
+  @@index([createdAt(sort: Desc)])
+  @@map("deal_notes")
+}
+
+// -----------------------------------------------------------------------------
+// DEAL_FILES
+// -----------------------------------------------------------------------------
+
+model DealFile {
+  id        String   @id @default(uuid()) @db.Uuid
+  dealId    String   @map("deal_id") @db.Uuid
+  fileName  String   @map("file_name")
+  filePath  String   @map("file_path")
+  fileSize  Int?     @map("file_size")
+  mimeType  String?  @map("mime_type")
+  createdAt DateTime @default(now()) @map("created_at")
+  createdBy String?  @map("created_by") @db.Uuid
+
+  deal    Deal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  creator Profile? @relation(fields: [createdBy], references: [id], onDelete: SetNull)
+
+  @@index([dealId])
+  @@map("deal_files")
+}
+
+// -----------------------------------------------------------------------------
+// QUICK_SCRIPTS
+// -----------------------------------------------------------------------------
+
+model QuickScript {
+  id        String   @id @default(uuid()) @db.Uuid
+  title     String
+  category  String   // followup, objection, closing, intro, rescue, other
+  template  String
+  icon      String   @default("MessageSquare")
+  isSystem  Boolean  @default(false) @map("is_system")
+  userId    String?  @map("user_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user Profile? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([category])
+  @@map("quick_scripts")
+}
+
+// =============================================================================
+// INTEGRATIONS / WEBHOOKS
+// =============================================================================
+
+model IntegrationInboundSource {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String   @default("Entrada de Leads")
+  entryBoardId   String   @map("entry_board_id") @db.Uuid
+  entryStageId   String   @map("entry_stage_id") @db.Uuid
+  secret         String
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  entryBoard   Board        @relation(fields: [entryBoardId], references: [id])
+  entryStage   BoardStage   @relation("InboundEntryStage", fields: [entryStageId], references: [id])
+
+  webhookEventsIn WebhookEventIn[]
+
+  @@map("integration_inbound_sources")
+}
+
+model IntegrationOutboundEndpoint {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String   @default("Follow-up (Webhook)")
+  url            String
+  secret         String
+  events         String[] @default(["deal.stage_changed"])
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  webhookDeliveries WebhookDelivery[]
+
+  @@map("integration_outbound_endpoints")
+}
+
+model WebhookEventIn {
+  id               String   @id @default(uuid()) @db.Uuid
+  organizationId   String   @map("organization_id") @db.Uuid
+  sourceId         String   @map("source_id") @db.Uuid
+  provider         String   @default("generic")
+  externalEventId  String?  @map("external_event_id")
+  payload          Json     @default("{}")
+  status           String   @default("received")
+  error            String?
+  createdContactId String?  @map("created_contact_id") @db.Uuid
+  createdDealId    String?  @map("created_deal_id") @db.Uuid
+  receivedAt       DateTime @default(now()) @map("received_at")
+
+  organization   Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  source         IntegrationInboundSource  @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  createdContact Contact?                  @relation("WebhookCreatedContact", fields: [createdContactId], references: [id], onDelete: SetNull)
+  createdDeal    Deal?                     @relation("WebhookCreatedDeal", fields: [createdDealId], references: [id], onDelete: SetNull)
+
+  @@unique([sourceId, externalEventId])
+  @@map("webhook_events_in")
+}
+
+model WebhookEventOut {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  eventType      String   @map("event_type")
+  payload        Json     @default("{}")
+  dealId         String?  @map("deal_id") @db.Uuid
+  fromStageId    String?  @map("from_stage_id") @db.Uuid
+  toStageId      String?  @map("to_stage_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  deal         Deal?        @relation(fields: [dealId], references: [id], onDelete: SetNull)
+  fromStage    BoardStage?  @relation("WebhookFromStage", fields: [fromStageId], references: [id], onDelete: SetNull)
+  toStage      BoardStage?  @relation("WebhookToStage", fields: [toStageId], references: [id], onDelete: SetNull)
+
+  deliveries WebhookDelivery[]
+
+  @@map("webhook_events_out")
+}
+
+model WebhookDelivery {
+  id             String   @id @default(uuid()) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  endpointId     String   @map("endpoint_id") @db.Uuid
+  eventId        String   @map("event_id") @db.Uuid
+  requestId      BigInt?  @map("request_id")
+  status         String   @default("queued")
+  attemptedAt    DateTime @default(now()) @map("attempted_at")
+  responseStatus Int?     @map("response_status")
+  error          String?
+
+  organization Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  endpoint     IntegrationOutboundEndpoint  @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+  event        WebhookEventOut              @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@map("webhook_deliveries")
+}

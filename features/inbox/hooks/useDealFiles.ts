@@ -53,7 +53,7 @@ export function useDealFiles(dealId: string | undefined) {
 
     // Download file
     const downloadFile = async (file: DealFile) => {
-        const { url, error } = await dealFilesService.getDownloadUrl(file.file_path);
+        const { url, error } = await dealFilesService.getDownloadUrl(file.filePath);
         if (error || !url) {
             console.error('Download error:', error);
             return;
@@ -62,7 +62,7 @@ export function useDealFiles(dealId: string | undefined) {
         // Open in new tab or trigger download
         const a = document.createElement('a');
         a.href = url;
-        a.download = file.file_name;
+        a.download = file.fileName;
         a.target = '_blank';
         document.body.appendChild(a);
         a.click();

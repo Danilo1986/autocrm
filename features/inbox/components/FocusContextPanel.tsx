@@ -532,20 +532,20 @@ export const FocusContextPanel: React.FC<FocusContextPanelProps> = ({
         const notesPreview = (notes ?? []).slice(0, notesLimit).map((n) => ({
             id: n.id,
             content: n.content,
-            created_at: n.created_at,
-            updated_at: n.updated_at,
-            created_by: n.created_by,
+            created_at: n.createdAt,
+            updated_at: n.updatedAt,
+            created_by: n.createdBy,
         }));
 
         const filesLimit = 50;
         const filesPreview = (files ?? []).slice(0, filesLimit).map((f) => ({
             id: f.id,
-            file_name: f.file_name,
-            file_size: f.file_size,
-            mime_type: f.mime_type,
-            file_path: f.file_path,
-            created_at: f.created_at,
-            created_by: f.created_by,
+            file_name: f.fileName,
+            file_size: f.fileSize,
+            mime_type: f.mimeType,
+            file_path: f.filePath,
+            created_at: f.createdAt,
+            created_by: f.createdBy,
         }));
 
         const scriptsLimit = 50;
@@ -555,8 +555,8 @@ export const FocusContextPanel: React.FC<FocusContextPanelProps> = ({
             category: s.category,
             template: s.template,
             icon: s.icon,
-            is_system: s.is_system,
-            updated_at: s.updated_at,
+            is_system: s.isSystem,
+            updated_at: s.updatedAt,
         }));
 
         return {
@@ -1562,7 +1562,7 @@ export const FocusContextPanel: React.FC<FocusContextPanelProps> = ({
                                                     <p className="text-sm text-slate-300 whitespace-pre-wrap">{n.content}</p>
                                                     <div className="flex justify-between items-center mt-2">
                                                         <span className="text-[10px] text-slate-600">
-                                                            {new Date(n.created_at).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                                                            {new Date(n.createdAt).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
                                                         </span>
                                                         <button
                                                             onClick={() => deleteNote.mutate(n.id)}
@@ -1633,7 +1633,7 @@ export const FocusContextPanel: React.FC<FocusContextPanelProps> = ({
                                     </div>
                                     <div className="space-y-3">
                                         {scripts.map((script) => {
-                                            const categoryInfo = getCategoryInfo(script.category);
+                                            const categoryInfo = getCategoryInfo(script.category as ScriptCategory);
                                             return (
                                                 <div
                                                     key={script.id}
@@ -1652,7 +1652,7 @@ export const FocusContextPanel: React.FC<FocusContextPanelProps> = ({
                                                             <span className="text-sm font-semibold text-white">
                                                                 {script.title}
                                                             </span>
-                                                            {script.is_system && (
+                                                            {script.isSystem && (
                                                                 <span className="text-[9px] text-slate-500 bg-slate-700/50 px-1.5 py-0.5 rounded">Sistema</span>
                                                             )}
                                                         </div>
@@ -1663,7 +1663,7 @@ export const FocusContextPanel: React.FC<FocusContextPanelProps> = ({
                                                                 </span>
                                                             )}
                                                             {/* Edit/Delete for user scripts */}
-                                                            {!script.is_system && (
+                                                            {!script.isSystem && (
                                                                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                                                     <button
                                                                         onClick={(e) => {
@@ -1671,7 +1671,7 @@ export const FocusContextPanel: React.FC<FocusContextPanelProps> = ({
                                                                             setEditingScript({
                                                                                 id: script.id,
                                                                                 title: script.title,
-                                                                                category: script.category,
+                                                                                category: script.category as ScriptCategory,
                                                                                 template: script.template,
                                                                                 icon: script.icon,
                                                                             });
@@ -1748,16 +1748,16 @@ export const FocusContextPanel: React.FC<FocusContextPanelProps> = ({
                                             <p className="text-sm text-slate-600 text-center py-4">Nenhum arquivo ainda</p>
                                         ) : (
                                             files.map((file) => {
-                                                const ext = file.file_name.split('.').pop()?.toUpperCase() || 'FILE';
+                                                const ext = file.fileName.split('.').pop()?.toUpperCase() || 'FILE';
                                                 return (
                                                     <div key={file.id} className="flex items-center p-3 rounded-lg bg-slate-800/20 border border-white/5 hover:bg-slate-800/40 transition-colors group">
                                                         <div className="w-10 h-10 rounded-lg bg-slate-900 flex items-center justify-center text-xs font-bold text-slate-400 border border-white/5 uppercase shrink-0">
                                                             {ext.slice(0, 3)}
                                                         </div>
                                                         <div className="ml-3 flex-1 min-w-0">
-                                                            <p className="text-sm font-medium text-white truncate">{file.file_name}</p>
+                                                            <p className="text-sm font-medium text-white truncate">{file.fileName}</p>
                                                             <p className="text-xs text-slate-500">
-                                                                {formatFileSize(file.file_size)} • {new Date(file.created_at).toLocaleDateString('pt-BR')}
+                                                                {formatFileSize(file.fileSize)} • {new Date(file.createdAt).toLocaleDateString('pt-BR')}
                                                             </p>
                                                         </div>
                                                         <button
@@ -1767,7 +1767,7 @@ export const FocusContextPanel: React.FC<FocusContextPanelProps> = ({
                                                             <Download size={16} />
                                                         </button>
                                                         <button
-                                                            onClick={() => deleteFile.mutate({ fileId: file.id, filePath: file.file_path })}
+                                                            onClick={() => deleteFile.mutate({ fileId: file.id, filePath: file.filePath })}
                                                             className="p-2 hover:bg-red-500/10 rounded-lg text-slate-500 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
                                                         >
                                                             <Trash2 size={16} />

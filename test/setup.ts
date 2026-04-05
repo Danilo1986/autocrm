@@ -8,6 +8,21 @@ import { getRunId } from './helpers/runId';
 import { vi } from 'vitest';
 vi.mock('server-only', () => ({}));
 
+// Mock next-auth (requires next/server which is not available in vitest)
+vi.mock('next-auth/react', () => ({
+  useSession: () => ({ data: null, status: 'unauthenticated' }),
+  signIn: vi.fn(),
+  signOut: vi.fn(),
+  SessionProvider: ({ children }: any) => children,
+}));
+
+vi.mock('@/lib/auth/auth', () => ({
+  auth: async () => null,
+  signIn: vi.fn(),
+  signOut: vi.fn(),
+  handlers: { GET: vi.fn(), POST: vi.fn() },
+}));
+
 /**
  * Test noise suppression (targeted).
  *

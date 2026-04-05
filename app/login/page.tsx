@@ -2,21 +2,15 @@
 
 import React, { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { createClient } from '@/lib/supabase/client'
-import { getErrorMessage } from '@/lib/utils/errorUtils'
+import { signIn } from 'next-auth/react'
 import { Loader2, Mail, Lock, ArrowRight } from 'lucide-react'
 
-/**
- * Componente React `LoginPage`.
- * @returns {Element} Retorna um valor do tipo `Element`.
- */
 export default function LoginPage() {
     const [email, setEmail] = useState('')
     const [password, setPassword] = useState('')
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const router = useRouter()
-    const supabase = createClient()
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
@@ -24,19 +18,19 @@ export default function LoginPage() {
         setError(null)
 
         try {
-            if (!supabase) {
-                throw new Error('Supabase não configurado. Configure as variáveis de ambiente.')
-            }
-
-            const { error } = await supabase.auth.signInWithPassword({
+            const result = await signIn('credentials', {
                 email,
                 password,
+                redirect: false,
             })
 
-            if (error) throw error
-            router.push('/dashboard')
-        } catch (err) {
-            setError(getErrorMessage(err))
+            if (result?.error) {
+                setError('Email ou senha incorretos.')
+            } else {
+                router.push('/dashboard')
+            }
+        } catch {
+            setError('Erro ao fazer login. Tente novamente.')
         } finally {
             setLoading(false)
         }

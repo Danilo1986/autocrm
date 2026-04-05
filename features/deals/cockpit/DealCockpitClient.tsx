@@ -272,7 +272,7 @@ function TemplatePickerModal({
               ) : (
                 <div className="divide-y divide-white/5">
                   {filtered.map((s) => {
-                    const info = getCategoryInfo(s.category);
+                    const info = getCategoryInfo(s.category as ScriptCategory);
                     const preview = applyVariables(s.template, variables);
                     return (
                       <button
@@ -290,7 +290,7 @@ function TemplatePickerModal({
                                 {info.label}
                               </span>
                               <span className="truncate text-sm font-semibold text-slate-100">{s.title}</span>
-                              {s.is_system ? <span className="text-[10px] text-slate-500">Sistema</span> : null}
+                              {s.isSystem ? <span className="text-[10px] text-slate-500">Sistema</span> : null}
                             </div>
                             <div className="mt-2 text-xs text-slate-400 line-clamp-3 whitespace-pre-wrap">{preview}</div>
                           </div>
@@ -331,7 +331,7 @@ function uid(prefix = 'id'): string {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
 }
 
-function formatAtISO(iso: string): string {
+function formatAtISO(iso: string | Date): string {
   const d = new Date(iso);
   const dd = PT_BR_DATE_FORMATTER.format(d);
   const tt = PT_BR_TIME_FORMATTER.format(d);
@@ -863,20 +863,20 @@ export default function DealCockpitClient({ dealId }: { dealId?: string }) {
     const notesPreview = (notes ?? []).slice(0, notesLimit).map((n) => ({
       id: n.id,
       content: n.content,
-      created_at: n.created_at,
-      updated_at: n.updated_at,
-      created_by: n.created_by,
+      created_at: n.createdAt,
+      updated_at: n.updatedAt,
+      created_by: n.createdBy,
     }));
 
     const filesLimit = 50;
     const filesPreview = (files ?? []).slice(0, filesLimit).map((f) => ({
       id: f.id,
-      file_name: f.file_name,
-      file_size: f.file_size,
-      mime_type: f.mime_type,
-      file_path: f.file_path,
-      created_at: f.created_at,
-      created_by: f.created_by,
+      file_name: f.fileName,
+      file_size: f.fileSize,
+      mime_type: f.mimeType,
+      file_path: f.filePath,
+      created_at: f.createdAt,
+      created_by: f.createdBy,
     }));
 
     const scriptsLimit = 50;
@@ -886,8 +886,8 @@ export default function DealCockpitClient({ dealId }: { dealId?: string }) {
       category: s.category,
       template: s.template,
       icon: s.icon,
-      is_system: s.is_system,
-      updated_at: s.updated_at,
+      is_system: s.isSystem,
+      updated_at: s.updatedAt,
     }));
 
     return {
@@ -2329,7 +2329,7 @@ export default function DealCockpitClient({ dealId }: { dealId?: string }) {
                             <div key={n.id} className="rounded-2xl border border-white/10 bg-white/3 p-3">
                               <div className="whitespace-pre-wrap text-sm text-slate-200">{n.content}</div>
                               <div className="mt-2 flex items-center justify-between gap-2">
-                                <div className="text-[11px] text-slate-500">{formatAtISO(n.created_at)}</div>
+                                <div className="text-[11px] text-slate-500">{formatAtISO(n.createdAt)}</div>
                                 <div className="flex items-center gap-2">
                                   <button
                                     type="button"
@@ -2366,7 +2366,7 @@ export default function DealCockpitClient({ dealId }: { dealId?: string }) {
 
                     <div className="mt-3 space-y-2">
                       {scripts.map((s) => {
-                        const info = getCategoryInfo(s.category);
+                        const info = getCategoryInfo(s.category as ScriptCategory);
                         const preview = applyVariables(s.template, templateVariables);
                         return (
                           <div key={s.id} className="rounded-2xl border border-white/10 bg-white/3 p-3">
@@ -2425,9 +2425,9 @@ export default function DealCockpitClient({ dealId }: { dealId?: string }) {
                           <div key={f.id} className="rounded-2xl border border-white/10 bg-white/3 p-3">
                             <div className="flex items-center justify-between gap-3">
                               <div className="min-w-0">
-                                <div className="truncate text-sm font-semibold text-slate-100">{f.file_name}</div>
+                                <div className="truncate text-sm font-semibold text-slate-100">{f.fileName}</div>
                                 <div className="mt-1 text-xs text-slate-400">
-                                  {formatFileSize(f.file_size)} • {formatAtISO(f.created_at)}
+                                  {formatFileSize(f.fileSize)} • {formatAtISO(f.createdAt)}
                                 </div>
                               </div>
                               <div className="flex items-center gap-2">
@@ -2442,7 +2442,7 @@ export default function DealCockpitClient({ dealId }: { dealId?: string }) {
                                 <button
                                   type="button"
                                   className="rounded-lg border border-rose-500/20 bg-rose-500/10 p-2 text-rose-200 hover:bg-rose-500/15"
-                                  onClick={() => void deleteFile.mutate({ fileId: f.id, filePath: f.file_path })}
+                                  onClick={() => void deleteFile.mutate({ fileId: f.id, filePath: f.filePath })}
                                   title="Excluir"
                                 >
                                   <X className="h-4 w-4" />

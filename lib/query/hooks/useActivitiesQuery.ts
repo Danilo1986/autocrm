@@ -38,7 +38,7 @@ export const useActivities = (filters?: ActivitiesFilters) => {
       const { data, error } = await activitiesService.getAll();
       if (error) throw error;
 
-      let activities = data || [];
+      let activities = (data || []) as unknown as Activity[];
 
       // Apply client-side filters
       if (filters) {
@@ -79,7 +79,8 @@ export const useActivitiesByDeal = (dealId: string | undefined) => {
     queryFn: async () => {
       const { data, error } = await activitiesService.getAll();
       if (error) throw error;
-      const filtered = (data || []).filter(a => a.dealId === dealId);
+      const all = (data || []) as unknown as Activity[];
+      const filtered = all.filter(a => a.dealId === dealId);
       return sortActivitiesSmart(filtered);
     },
     enabled: !authLoading && !!user && !!dealId,
@@ -96,7 +97,8 @@ export const usePendingActivities = () => {
     queryFn: async () => {
       const { data, error } = await activitiesService.getAll();
       if (error) throw error;
-      const filtered = (data || []).filter(a => !a.completed);
+      const all = (data || []) as unknown as Activity[];
+      const filtered = all.filter(a => !a.completed);
       return sortActivitiesSmart(filtered);
     },
     enabled: !authLoading && !!user,
@@ -115,7 +117,8 @@ export const useTodayActivities = () => {
     queryFn: async () => {
       const { data, error } = await activitiesService.getAll();
       if (error) throw error;
-      const filtered = (data || []).filter(a => a.date.startsWith(today));
+      const all = (data || []) as unknown as Activity[];
+      const filtered = all.filter(a => a.date.startsWith(today));
       return sortActivitiesSmart(filtered);
     },
     staleTime: 30 * 1000, // 30 seconds - very fresh for today's view

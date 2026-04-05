@@ -1,260 +1,126 @@
 /**
- * @fileoverview Contexto de Autenticação
- * 
- * Provider React que gerencia autenticação Supabase e perfil do usuário.
+ * @fileoverview Contexto de Autenticação (NextAuth)
+ *
+ * Provider React que gerencia autenticação via NextAuth e perfil do usuário.
  * Fornece sessão, usuário, perfil e organizationId para toda a aplicação.
- * 
+ *
+ * Mantém a mesma interface pública do provider anterior (Supabase).
+ *
  * @module context/AuthContext
- * 
- * @example
- * ```tsx
- * // No App.tsx
- * <AuthProvider>
- *   <App />
- * </AuthProvider>
- * 
- * // Em qualquer componente
- * function UserInfo() {
- *   const { user, profile, organizationId, signOut } = useAuth();
- *   
- *   return (
- *     <div>
- *       <span>{profile?.first_name}</span>
- *       <button onClick={signOut}>Sair</button>
- *     </div>
- *   );
- * }
- * ```
  */
 
-import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User, Session } from '@supabase/supabase-js';
-import { supabase } from '../lib/supabase';
-import type { OrganizationId } from '../types';
+import React, { createContext, useContext, useEffect, useState, useCallback } from 'react'
+import { useSession, signOut as nextAuthSignOut } from 'next-auth/react'
+import type { OrganizationId } from '../types'
 
-/**
- * Perfil do usuário no sistema
- * 
- * @interface Profile
- * @property {string} id - UUID do usuário (= auth.users.id)
- * @property {string} email - Email do usuário
- * @property {OrganizationId} organization_id - ID da organização (tenant)
- * @property {'admin' | 'vendedor'} role - Papel do usuário
- * @property {string | null} [first_name] - Primeiro nome
- * @property {string | null} [last_name] - Sobrenome
- * @property {string | null} [nickname] - Apelido
- * @property {string | null} [phone] - Telefone
- * @property {string | null} [avatar_url] - URL do avatar
- * @property {string} [created_at] - Data de criação
- */
 interface Profile {
-    id: string;
-    email: string;
-    organization_id: OrganizationId;
-    role: 'admin' | 'vendedor';
-    first_name?: string | null;
-    last_name?: string | null;
-    nickname?: string | null;
-    phone?: string | null;
-    avatar_url?: string | null;
-    created_at?: string;
+  id: string
+  email: string
+  organization_id: OrganizationId
+  role: 'admin' | 'vendedor'
+  first_name?: string | null
+  last_name?: string | null
+  nickname?: string | null
+  phone?: string | null
+  avatar_url?: string | null
+  created_at?: string
 }
 
-/**
- * Tipo do contexto de autenticação
- * 
- * @interface AuthContextType
- */
 interface AuthContextType {
-    /** Sessão Supabase ativa */
-    session: Session | null;
-    /** Usuário Supabase autenticado */
-    user: User | null;
-    /** Perfil do usuário com dados da organização */
-    profile: Profile | null;
-    /** Getter de conveniência para profile.organization_id */
-    organizationId: OrganizationId | null;
-    /** Se está carregando dados iniciais */
-    loading: boolean;
-    /** Se a instância foi inicializada (setup feito) */
-    isInitialized: boolean | null;
-    /** Verifica se instância foi inicializada */
-    checkInitialization: () => Promise<void>;
-    /** Faz logout do usuário */
-    signOut: () => Promise<void>;
-    /** Recarrega dados do perfil */
-    refreshProfile: () => Promise<void>;
+  session: any | null
+  user: { id: string; email: string } | null
+  profile: Profile | null
+  organizationId: OrganizationId | null
+  loading: boolean
+  isInitialized: boolean | null
+  checkInitialization: () => Promise<void>
+  signOut: () => Promise<void>
+  refreshProfile: () => Promise<void>
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
-/**
- * Provider de autenticação
- * 
- * Gerencia sessão Supabase e mantém perfil do usuário sincronizado.
- * Escuta mudanças de estado de autenticação automaticamente.
- * 
- * @param {Object} props - Props do componente
- * @param {React.ReactNode} props.children - Componentes filhos
- * 
- * @example
- * ```tsx
- * function App() {
- *   return (
- *     <AuthProvider>
- *       <Router>
- *         <Routes>...</Routes>
- *       </Router>
- *     </AuthProvider>
- *   );
- * }
- * ```
- */
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-    const [session, setSession] = useState<Session | null>(null);
-    const [user, setUser] = useState<User | null>(null);
-    const [profile, setProfile] = useState<Profile | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [isInitialized, setIsInitialized] = useState<boolean | null>(null);
+  const { data: session, status } = useSession()
+  const [profile, setProfile] = useState<Profile | null>(null)
+  const [isInitialized, setIsInitialized] = useState<boolean | null>(null)
+  const [profileLoaded, setProfileLoaded] = useState(false)
 
-    // Supabase client pode ser null quando envs não estão configuradas.
-    // O app real exige Supabase configurado, mas este guard evita falha no build.
-    const sb = supabase;
+  const loading = status === 'loading' || (status === 'authenticated' && !profileLoaded)
 
-    const checkInitialization = async () => {
-        try {
-            if (!sb) {
-                setIsInitialized(true);
-                return;
-            }
-
-            const { data, error } = await sb.rpc('is_instance_initialized');
-            if (error) throw error;
-            setIsInitialized(data);
-        } catch (error) {
-            console.error('Error checking initialization:', error);
-            setIsInitialized(true);
-        }
-    };
-
-    const fetchProfile = async (userId: string) => {
-        try {
-            if (!sb) {
-                setProfile(null);
-                return;
-            }
-
-            const { data, error } = await sb
-                .from('profiles')
-                .select('*')
-                .eq('id', userId)
-                .single();
-
-            if (error) {
-                console.error('Error fetching profile:', error);
-            } else {
-                setProfile(data);
-            }
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    const refreshProfile = async () => {
-        if (user?.id) {
-            await fetchProfile(user.id);
-        }
-    };
-
-    useEffect(() => {
-        if (!sb) {
-            // Sem Supabase configurado: mantém app em estado "deslogado".
-            setSession(null);
-            setUser(null);
-            setProfile(null);
-            setIsInitialized(true);
-            setLoading(false);
-            return;
-        }
-
-        checkInitialization();
-
-        sb.auth.getSession().then(({ data: { session } }) => {
-            setSession(session);
-            setUser(session?.user ?? null);
-            if (session?.user) {
-                fetchProfile(session.user.id);
-            } else {
-                setLoading(false);
-            }
-        });
-
-        const { data: { subscription } } = sb.auth.onAuthStateChange((_event, session) => {
-            setSession(session);
-            setUser(session?.user ?? null);
-            if (session?.user) {
-                fetchProfile(session.user.id);
-            } else {
-                setProfile(null);
-                setLoading(false);
-            }
-        });
-
-        return () => subscription.unsubscribe();
-    }, []);
-
-    const signOut = async () => {
-        if (sb) await sb.auth.signOut();
-        setProfile(null);
-        setUser(null);
-        setSession(null);
-    };
-
-    const value = {
-        session,
-        user,
-        profile,
-        organizationId: profile?.organization_id ?? null,
-        loading,
-        isInitialized,
-        checkInitialization,
-        signOut,
-        refreshProfile,
-    };
-
-    return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
-};
-
-/**
- * Hook para acessar contexto de autenticação
- * 
- * Fornece acesso ao usuário autenticado, perfil e funções de auth.
- * Deve ser usado dentro de um AuthProvider.
- * 
- * @returns {AuthContextType} Contexto de autenticação
- * @throws {Error} Se usado fora do AuthProvider
- * 
- * @example
- * ```tsx
- * function ProtectedComponent() {
- *   const { user, profile, organizationId, loading, signOut } = useAuth();
- *   
- *   if (loading) return <Spinner />;
- *   if (!user) return <Navigate to="/login" />;
- *   
- *   return (
- *     <div>
- *       Olá, {profile?.first_name}!
- *       Org: {organizationId}
- *     </div>
- *   );
- * }
- * ```
- */
-export const useAuth = () => {
-    const context = useContext(AuthContext);
-    if (context === undefined) {
-        throw new Error('useAuth must be used within an AuthProvider');
+  const checkInitialization = useCallback(async () => {
+    try {
+      const res = await fetch('/api/installer/check-initialized')
+      const data = await res.json()
+      setIsInitialized(data.initialized ?? true)
+    } catch {
+      setIsInitialized(true)
     }
-    return context;
-};
+  }, [])
+
+  const fetchProfile = useCallback(async () => {
+    try {
+      const res = await fetch('/api/profile/me')
+      if (res.ok) {
+        const data = await res.json()
+        setProfile(data)
+      } else {
+        setProfile(null)
+      }
+    } catch {
+      setProfile(null)
+    } finally {
+      setProfileLoaded(true)
+    }
+  }, [])
+
+  const refreshProfile = useCallback(async () => {
+    if (session?.user) {
+      await fetchProfile()
+    }
+  }, [session?.user, fetchProfile])
+
+  useEffect(() => {
+    checkInitialization()
+  }, [checkInitialization])
+
+  useEffect(() => {
+    if (status === 'authenticated' && session?.user) {
+      fetchProfile()
+    } else if (status === 'unauthenticated') {
+      setProfile(null)
+      setProfileLoaded(true)
+    }
+  }, [status, session?.user, fetchProfile])
+
+  const handleSignOut = useCallback(async () => {
+    await nextAuthSignOut({ redirectTo: '/login' })
+    setProfile(null)
+  }, [])
+
+  const user = session?.user
+    ? { id: session.user.id, email: session.user.email ?? '' }
+    : null
+
+  const value: AuthContextType = {
+    session,
+    user,
+    profile,
+    organizationId: profile?.organization_id ?? null,
+    loading,
+    isInitialized,
+    checkInitialization,
+    signOut: handleSignOut,
+    refreshProfile,
+  }
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+}
+
+export const useAuth = () => {
+  const context = useContext(AuthContext)
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider')
+  }
+  return context
+}

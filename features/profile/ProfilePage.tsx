@@ -2,7 +2,7 @@ import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react'
 import Image from 'next/image';
 import { getErrorMessage } from '@/lib/utils/errorUtils';
 import { useAuth } from '@/context/AuthContext';
-import { supabase } from '@/lib/supabase';
+// Migration: supabase removed, using fetch API for profile operations
 import { isE164, normalizePhoneE164 } from '@/lib/phone';
 import { Loader2, User, Mail, Shield, Calendar, Key, Check, Eye, EyeOff, Phone, Pencil, Save, Camera, X } from 'lucide-react';
 
@@ -12,10 +12,6 @@ import { Loader2, User, Mail, Shield, Calendar, Key, Check, Eye, EyeOff, Phone, 
  */
 export const ProfilePage: React.FC = () => {
     const { profile, refreshProfile } = useAuth();
-
-    // Em ambientes onde as variáveis de ambiente não estão configuradas,
-    // nosso helper pode retornar `null` para evitar crash.
-    const sb = supabase;
 
     const [isChangingPassword, setIsChangingPassword] = useState(false);
     const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -96,24 +92,6 @@ export const ProfilePage: React.FC = () => {
         fileInputRef.current?.click();
     }, []);
 
-    // Sem Supabase não há como salvar/atualizar perfil.
-    // Hooks MUST come before early returns (rules-of-hooks).
-    if (!sb) {
-        return (
-            <div className="p-6">
-                <div className="max-w-xl mx-auto bg-white dark:bg-dark-card border border-slate-200 dark:border-white/10 rounded-2xl p-6">
-                    <h1 className="text-lg font-bold text-slate-900 dark:text-white mb-2">
-                        Configuração incompleta
-                    </h1>
-                    <p className="text-slate-600 dark:text-slate-300">
-                        O Supabase não está configurado neste ambiente. Verifique as variáveis de ambiente
-                        (URL e ANON KEY) para usar a página de perfil.
-                    </p>
-                </div>
-            </div>
-        );
-    }
-
     // Upload de avatar
     const handleAvatarUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
         const file = event.target.files?.[0];
@@ -134,34 +112,14 @@ export const ProfilePage: React.FC = () => {
         setMessage(null);
 
         try {
-            // Nome único para o arquivo
-            const fileExt = file.name.split('.').pop();
-            const fileName = `${profile.id}.${fileExt}`;
-            const filePath = `avatars/${fileName}`;
+            // Upload avatar via API
+            const formData = new FormData();
+            formData.append('file', file);
+            const res = await fetch('/api/profile/avatar', { method: 'POST', body: formData });
+            const json = await res.json();
+            if (!res.ok) throw new Error(json.error || 'Upload failed');
 
-            // Upload para o Storage
-            const { error: uploadError } = await sb.storage
-                .from('avatars')
-                .upload(filePath, file, { upsert: true });
-
-            if (uploadError) throw uploadError;
-
-            // Pega a URL pública
-            const { data: { publicUrl } } = sb.storage
-                .from('avatars')
-                .getPublicUrl(filePath);
-
-            // Adiciona timestamp para evitar cache
-            const urlWithTimestamp = `${publicUrl}?t=${Date.now()}`;
-
-            // Atualiza o perfil com a URL do avatar
-            const { error: updateError } = await sb
-                .from('profiles')
-                .update({ avatar_url: urlWithTimestamp })
-                .eq('id', profile.id);
-
-            if (updateError) throw updateError;
-
+            const urlWithTimestamp = json.url || '';
             setAvatarUrl(urlWithTimestamp);
             if (refreshProfile) await refreshProfile();
             setMessage({ type: 'success', text: 'Foto atualizada!' });
@@ -181,18 +139,11 @@ export const ProfilePage: React.FC = () => {
         setMessage(null);
 
         try {
-            // Remove do Storage (ignora erro se não existir)
-            await sb.storage
-                .from('avatars')
-                .remove([`avatars/${profile.id}.jpg`, `avatars/${profile.id}.png`, `avatars/${profile.id}.jpeg`]);
-
-            // Remove URL do perfil
-            const { error } = await sb
-                .from('profiles')
-                .update({ avatar_url: null })
-                .eq('id', profile.id);
-
-            if (error) throw error;
+            const res = await fetch('/api/profile/avatar', { method: 'DELETE' });
+            if (!res.ok) {
+                const json = await res.json().catch(() => ({}));
+                throw new Error(json.error || 'Failed to remove avatar');
+            }
 
             setAvatarUrl(null);
             if (refreshProfile) await refreshProfile();
@@ -218,17 +169,20 @@ export const ProfilePage: React.FC = () => {
                 return;
             }
 
-            const { error } = await sb
-                .from('profiles')
-                .update({
+            const res = await fetch('/api/profile', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
                     first_name: firstName.trim() || null,
                     last_name: lastName.trim() || null,
                     nickname: nickname.trim() || null,
                     phone: normalizedPhone || null,
-                })
-                .eq('id', profile?.id);
-
-            if (error) throw error;
+                }),
+            });
+            if (!res.ok) {
+                const json = await res.json().catch(() => ({}));
+                throw new Error(json.error || 'Failed to update profile');
+            }
 
             // Atualiza o perfil no contexto
             if (refreshProfile) await refreshProfile();
@@ -259,11 +213,15 @@ export const ProfilePage: React.FC = () => {
         setMessage(null);
 
         try {
-            const { error } = await sb.auth.updateUser({
-                password: newPassword
+            const res = await fetch('/api/profile/password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: newPassword }),
             });
-
-            if (error) throw error;
+            if (!res.ok) {
+                const json = await res.json().catch(() => ({}));
+                throw new Error(json.error || 'Failed to change password');
+            }
 
             setMessage({ type: 'success', text: 'Senha alterada com sucesso!' });
             setIsChangingPassword(false);
@@ -283,8 +241,15 @@ export const ProfilePage: React.FC = () => {
         setLoading(true);
 
         try {
-            const { error } = await sb.auth.updateUser({ email: newEmail });
-            if (error) throw error;
+            const res = await fetch('/api/profile/email', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email: newEmail }),
+            });
+            if (!res.ok) {
+                const json = await res.json().catch(() => ({}));
+                throw new Error(json.error || 'Failed to change email');
+            }
 
             setMessage({ type: 'success', text: 'E-mail de confirmação enviado para o novo endereço!' });
             setIsChangingEmail(false);

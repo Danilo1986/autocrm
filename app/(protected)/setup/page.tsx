@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
+import { signIn } from 'next-auth/react'
 import { getErrorMessage } from '@/lib/utils/errorUtils'
 import { useAuth } from '@/context/AuthContext'
 import { Loader2, Building2, User, Lock, ArrowRight } from 'lucide-react'
@@ -30,30 +30,16 @@ export default function SetupPage() {
 
     const run = async () => {
       try {
-        if (!supabase) {
-          // Sem Supabase configurado localmente: não dá pra checar init. Apenas mostra a UI.
-          return
-        }
+        const res = await fetch('/api/installer/check-initialized')
+        const data = await res.json()
 
-        const [{ data: initData, error: initError }, { data: sessionData }] = await Promise.all([
-          supabase.rpc('is_instance_initialized'),
-          supabase.auth.getSession(),
-        ])
-
-        if (initError) throw initError
-
-        if (initData === true) {
+        if (data.initialized === true) {
           if (cancelled) return
-          if (sessionData?.session?.user) {
-            router.replace('/dashboard')
-          } else {
-            router.replace('/login')
-          }
+          router.replace('/login')
           return
         }
       } catch (e) {
         console.error('Setup init check error:', e)
-        // Em caso de erro, não bloqueia o setup.
       } finally {
         if (!cancelled) setCheckingInit(false)
       }
@@ -93,22 +79,28 @@ export default function SetupPage() {
     setError(null)
 
     try {
-      const res = await fetch('/api/setup-instance', {
+      const res = await fetch('/api/setup', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify({ companyName, email, password }),
+        body: JSON.stringify({
+          organizationName: companyName,
+          adminName: email.split('@')[0],
+          adminEmail: email,
+          adminPassword: password,
+        }),
       })
 
       const data = await res.json().catch(() => null)
       if (!res.ok) throw new Error(data?.error || `Erro no setup (HTTP ${res.status})`)
 
-      const { error: signInError } = await supabase.auth.signInWithPassword({
+      const result = await signIn('credentials', {
         email,
         password,
+        redirect: false,
       })
 
-      if (signInError) throw signInError
+      if (result?.error) throw new Error('Erro ao fazer login apos setup.')
 
       await checkInitialization()
       router.push('/dashboard')

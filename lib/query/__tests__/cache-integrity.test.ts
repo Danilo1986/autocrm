@@ -22,7 +22,7 @@ const CRITICAL_FILES = [
   path.join(LIB_QUERY_DIR, 'hooks/useMoveDeal.ts'),
   path.join(CONTEXT_DIR, 'deals/DealsContext.tsx'),
   path.join(CONTEXT_DIR, 'CRMContext.tsx'),
-  path.join(REALTIME_DIR, 'useRealtimeSync.ts'),
+  path.join(REALTIME_DIR, 'useRealtimeSSE.ts'),
 ];
 
 // Padrões problemáticos que indicam regressão
@@ -50,7 +50,7 @@ const DANGEROUS_PATTERNS = [
 // Padrões obrigatórios que devem estar presentes
 const REQUIRED_PATTERNS = [
   {
-    files: ['useDealsQuery.ts', 'useMoveDeal.ts', 'DealsContext.tsx', 'useRealtimeSync.ts'],
+    files: ['useDealsQuery.ts', 'useMoveDeal.ts', 'DealsContext.tsx'],
     pattern: /import\s*\{[^}]*DEALS_VIEW_KEY[^}]*\}\s*from/,
     description: 'DEALS_VIEW_KEY deve ser importado',
   },
@@ -156,21 +156,21 @@ describe('Cache Integrity - Deals', () => {
       ).toBeNull();
     });
 
-    it('useRealtimeSync deve usar DEALS_VIEW_KEY para INSERT e UPDATE', () => {
-      const realtimePath = path.join(REALTIME_DIR, 'useRealtimeSync.ts');
-      
+    it('useRealtimeSSE deve invalidar deals query keys', () => {
+      const realtimePath = path.join(REALTIME_DIR, 'useRealtimeSSE.ts');
+
       if (!fs.existsSync(realtimePath)) {
-        console.warn('⚠️ useRealtimeSync.ts não encontrado');
+        console.warn('⚠️ useRealtimeSSE.ts não encontrado');
         return;
       }
 
       const content = fs.readFileSync(realtimePath, 'utf-8');
-      
-      // Deve importar DEALS_VIEW_KEY
-      expect(content).toMatch(/DEALS_VIEW_KEY/);
-      
-      // Deve ter comentário sobre única fonte de verdade
-      expect(content).toMatch(/única fonte de verdade|single source of truth/i);
+
+      // Deve importar queryKeys para invalidação
+      expect(content).toMatch(/queryKeys/);
+
+      // Deve invalidar queries quando change events chegam
+      expect(content).toMatch(/invalidateQueries/);
     });
   });
 

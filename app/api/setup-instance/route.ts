@@ -51,22 +51,26 @@ export async function POST(req: Request) {
 
   if (orgError) return json({ error: orgError.message }, 500);
 
-  const { data: userData, error: userError } = await admin.auth.admin.createUser({
-    email,
-    password,
-    email_confirm: true,
-    user_metadata: {
-      role: 'admin',
-      organization_id: organization.id,
-    },
-  });
+  // Create user via Prisma directly instead of Supabase auth
+  const { default: bcrypt } = await import('bcryptjs');
+  const hashedPassword = await bcrypt.hash(password, 12);
+  const { prisma } = await import('@/lib/db/prisma');
+  const { randomUUID } = await import('crypto');
 
-  if (userError) {
+  let userId: string;
+  try {
+    const user = await prisma.user.create({
+      data: {
+        id: randomUUID(),
+        email,
+        password: hashedPassword,
+      },
+    });
+    userId = user.id;
+  } catch (userError: any) {
     await admin.from('organizations').delete().eq('id', organization.id);
-    return json({ error: userError.message }, 400);
+    return json({ error: userError.message || 'Failed to create user' }, 400);
   }
-
-  const userId = userData.user.id;
   const displayName = email.split('@')[0];
 
   const { error: profileError } = await admin.from('profiles').upsert(
@@ -83,7 +87,7 @@ export async function POST(req: Request) {
   );
 
   if (profileError) {
-    await admin.auth.admin.deleteUser(userId);
+    await prisma.user.delete({ where: { id: userId } }).catch(() => {});
     await admin.from('organizations').delete().eq('id', organization.id);
     return json({ error: profileError.message }, 400);
   }

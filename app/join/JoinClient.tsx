@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
+import { signIn } from 'next-auth/react'
 import { getErrorMessage } from '@/lib/utils/errorUtils'
 import { Loader2, Mail, Lock, User, ArrowRight, AlertCircle } from 'lucide-react'
 
@@ -96,12 +96,13 @@ export function JoinClient({ token: tokenProp }: { token?: string | null }) {
       const data = await res.json().catch(() => null)
       if (!res.ok) throw new Error(data?.error || `Erro ao aceitar convite (HTTP ${res.status})`)
 
-      const { error: signInError } = await supabase.auth.signInWithPassword({
+      const result = await signIn('credentials', {
         email: formData.email,
         password: formData.password,
+        redirect: false,
       })
 
-      if (signInError) throw signInError
+      if (result?.error) throw new Error('Erro ao fazer login após criar conta.')
 
       router.push('/dashboard')
     } catch (err: any) {

@@ -39,6 +39,10 @@ const CONSENT_LABELS: Record<ConsentType, { title: string; description: string }
     title: 'Análise de Uso',
     description: 'Autorizo a coleta de dados de uso para melhoria da plataforma.',
   },
+  AI_CONSENT: {
+    title: 'Consentimento para IA',
+    description: 'Autorizo o uso de dados do CRM por provedores de IA para gerar insights e sugestões.',
+  },
 };
 
 /**

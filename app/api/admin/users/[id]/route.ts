@@ -50,11 +50,14 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
   if (!target) return json({ error: 'User not found' }, 404);
   if (target.organization_id !== me.organization_id) return json({ error: 'Forbidden' }, 403);
 
-  // Delete auth user first (cascades profile via FK, but we also try to remove profile explicitly)
-  const { error: authDeleteError } = await admin.auth.admin.deleteUser(id);
-  if (authDeleteError) return json({ error: authDeleteError.message }, 500);
-
-  await supabase.from('profiles').delete().eq('id', id);
+  // Delete user via Prisma (cascades profile via FK)
+  const { prisma } = await import('@/lib/db/prisma');
+  try {
+    await prisma.profile.deleteMany({ where: { id } });
+    await prisma.user.deleteMany({ where: { id } });
+  } catch (deleteErr: any) {
+    return json({ error: deleteErr.message || 'Failed to delete user' }, 500);
+  }
 
   return json({ ok: true });
 }

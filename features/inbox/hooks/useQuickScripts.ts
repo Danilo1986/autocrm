@@ -4,6 +4,7 @@
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { quickScriptsService, QuickScript, CreateScriptInput, ScriptCategory } from '@/lib/supabase/quickScripts';
+import { useAuth } from '@/context/AuthContext';
 
 /**
  * Hook React `useQuickScripts` que encapsula uma lógica reutilizável.
@@ -13,6 +14,7 @@ import { quickScriptsService, QuickScript, CreateScriptInput, ScriptCategory } f
  */
 export function useQuickScripts(category?: ScriptCategory) {
     const queryClient = useQueryClient();
+    const { user } = useAuth();
     const queryKey = category ? ['quick-scripts', category] : ['quick-scripts'];
 
     // Fetch scripts
@@ -30,7 +32,7 @@ export function useQuickScripts(category?: ScriptCategory) {
     // Create script
     const createScript = useMutation({
         mutationFn: async (input: CreateScriptInput) => {
-            const { data, error } = await quickScriptsService.createScript(input);
+            const { data, error } = await quickScriptsService.createScript(input, user!.id);
             if (error) throw error;
             return data;
         },
