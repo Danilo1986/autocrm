@@ -46,7 +46,6 @@
     "**/playwright/**",
     "**/vitest.config.*",
     "**/lib/**/test/**",
-    "supabase/functions/**",
     ".next/types/validator.ts"
   ]
 }

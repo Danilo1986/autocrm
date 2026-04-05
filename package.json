@@ -14,6 +14,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "smoke:integrations": "node scripts/smoke-integrations.mjs",
+    "migrate:from-supabase": "npx tsx scripts/migrate-from-supabase.ts",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "npx tsx lib/db/seed.ts",
