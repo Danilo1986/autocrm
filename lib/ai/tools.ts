@@ -3,21 +3,13 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db/prisma';
 import type { CRMCallOptions } from '@/types/ai';
 
-// Thin Supabase-compat adapter backed by Prisma. This avoids a 1600-line rewrite
-// while removing the dependency on the legacy supabase shim. The adapter implements
-// only the subset of the Supabase PostgREST API used by the AI tools below.
-// TODO: Migrate each tool to call prisma directly and remove this adapter.
-import { createSupabasePrismaAdapter } from '@/lib/supabase/prismaAdapter';
-
 /**
  * Creates all CRM tools with context injection
  * Context is provided at runtime via the agent's callOptionsSchema
  *
- * NOTE: Uses prisma directly (no cookies needed) for data access.
+ * NOTE: Uses prisma directly for data access.
  */
 export function createCRMTools(context: CRMCallOptions, userId: string) {
-    // Supabase-compat adapter backed by Prisma
-    const supabase = createSupabasePrismaAdapter();
     const organizationId = context.organizationId;
 
     // Em UI normal, ações são gateadas por um card de Aprovar/Negar.
@@ -25,66 +17,47 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
     // Use AI_TOOL_APPROVAL_BYPASS=true para permitir execução direta (somente dev/test).
     const bypassApproval = process.env.AI_TOOL_APPROVAL_BYPASS === 'true';
 
-    const formatSupabaseFailure = (error: any) => {
-        const msg = (error?.message || error?.error_description || String(error || '')).trim();
-        const normalized = msg.toLowerCase();
-
-        // Mensagens comuns quando a service role key está ausente/errada ou não bate com a URL.
-        const looksLikeAuth =
-            normalized.includes('jwt') ||
-            normalized.includes('invalid api key') ||
-            normalized.includes('apikey') ||
-            normalized.includes('permission denied') ||
-            normalized.includes('unauthorized') ||
-            normalized.includes('forbidden');
-
-        const hint = looksLikeAuth
-            ? ' Dica: verifique se `SUPABASE_SERVICE_ROLE_KEY` está configurada e corresponde ao mesmo projeto do `NEXT_PUBLIC_SUPABASE_URL`.'
-            : '';
-
-        return `Falha ao consultar o Supabase. ${msg || 'Erro desconhecido.'}${hint}`;
+    const formatPrismaError = (error: any) => {
+        const msg = (error?.message || String(error || '')).trim();
+        return `Falha ao consultar o banco de dados. ${msg || 'Erro desconhecido.'}`;
     };
 
     const ensureBoardBelongsToOrganization = async (boardId: string) => {
-        const { data: board, error: boardError } = await supabase
-            .from('boards')
-            .select('id')
-            .eq('organization_id', organizationId)
-            .eq('id', boardId)
-            .maybeSingle();
+        try {
+            const board = await prisma.board.findFirst({
+                where: { organizationId, id: boardId },
+                select: { id: true },
+            });
 
-        if (boardError) {
-            return { ok: false as const, error: formatSupabaseFailure(boardError) };
+            if (!board) {
+                return {
+                    ok: false as const,
+                    error:
+                        'O board selecionado não pertence à sua organização no backend da IA. Se você acabou de trocar de organização/board, recarregue a página. Se persistir, verifique se a IA está apontando para o mesmo projeto Supabase do app.'
+                };
+            }
+
+            return { ok: true as const };
+        } catch (err) {
+            return { ok: false as const, error: formatPrismaError(err) };
         }
-
-        if (!board) {
-            return {
-                ok: false as const,
-                error:
-                    'O board selecionado não pertence à sua organização no backend da IA. Se você acabou de trocar de organização/board, recarregue a página. Se persistir, verifique se a IA está apontando para o mesmo projeto Supabase do app.'
-            };
-        }
-
-        return { ok: true as const };
     };
 
     const ensureDealBelongsToOrganization = async (dealId: string) => {
-        const { data: deal, error: dealError } = await supabase
-            .from('deals')
-            .select('id, title, board_id, stage_id, contact_id')
-            .eq('organization_id', organizationId)
-            .eq('id', dealId)
-            .maybeSingle();
+        try {
+            const deal = await prisma.deal.findFirst({
+                where: { organizationId, id: dealId },
+                select: { id: true, title: true, boardId: true, stageId: true, contactId: true },
+            });
 
-        if (dealError) {
-            return { ok: false as const, error: formatSupabaseFailure(dealError) };
+            if (!deal) {
+                return { ok: false as const, error: 'Deal não encontrado nesta organização.' };
+            }
+
+            return { ok: true as const, deal };
+        } catch (err) {
+            return { ok: false as const, error: formatPrismaError(err) };
         }
-
-        if (!deal) {
-            return { ok: false as const, error: 'Deal não encontrado nesta organização.' };
-        }
-
-        return { ok: true as const, deal };
     };
 
     const resolveStageIdForBoard = async (params: {
@@ -99,62 +72,69 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
             return { ok: false as const, error: 'Especifique o estágio destino.' };
         }
 
-        // “primeiro estágio” / “último estágio” (atalhos úteis)
+        // "primeiro estágio" / "último estágio" (atalhos úteis)
         const lowered = stageName.toLowerCase();
         if (/(primeiro|in[íi]cio|inicial)/.test(lowered)) {
-            const { data: first, error } = await supabase
-                .from('board_stages')
-                .select('id')
-                .eq('organization_id', organizationId)
-                .eq('board_id', params.boardId)
-                .order('order', { ascending: true })
-                .limit(1)
-                .maybeSingle();
-            if (error) return { ok: false as const, error: formatSupabaseFailure(error) };
-            if (!first?.id) return { ok: false as const, error: 'Board não tem estágios configurados.' };
-            return { ok: true as const, stageId: first.id };
+            try {
+                const first = await prisma.boardStage.findFirst({
+                    where: { organizationId, boardId: params.boardId },
+                    select: { id: true },
+                    orderBy: { order: 'asc' },
+                });
+                if (!first?.id) return { ok: false as const, error: 'Board não tem estágios configurados.' };
+                return { ok: true as const, stageId: first.id };
+            } catch (err) {
+                return { ok: false as const, error: formatPrismaError(err) };
+            }
         }
 
         if (/(u[úu]ltimo|final)/.test(lowered)) {
-            const { data: last, error } = await supabase
-                .from('board_stages')
-                .select('id')
-                .eq('organization_id', organizationId)
-                .eq('board_id', params.boardId)
-                .order('order', { ascending: false })
-                .limit(1)
-                .maybeSingle();
-            if (error) return { ok: false as const, error: formatSupabaseFailure(error) };
-            if (!last?.id) return { ok: false as const, error: 'Board não tem estágios configurados.' };
-            return { ok: true as const, stageId: last.id };
+            try {
+                const last = await prisma.boardStage.findFirst({
+                    where: { organizationId, boardId: params.boardId },
+                    select: { id: true },
+                    orderBy: { order: 'desc' },
+                });
+                if (!last?.id) return { ok: false as const, error: 'Board não tem estágios configurados.' };
+                return { ok: true as const, stageId: last.id };
+            } catch (err) {
+                return { ok: false as const, error: formatPrismaError(err) };
+            }
         }
 
-        const { data: stages, error } = await supabase
-            .from('board_stages')
-            .select('id, name, label')
-            .eq('organization_id', organizationId)
-            .eq('board_id', params.boardId)
-            .or(`name.ilike.%${stageName}%,label.ilike.%${stageName}%`)
-            .limit(5);
+        try {
+            const stages = await prisma.boardStage.findMany({
+                where: {
+                    organizationId,
+                    boardId: params.boardId,
+                    OR: [
+                        { name: { contains: stageName, mode: 'insensitive' } },
+                        { label: { contains: stageName, mode: 'insensitive' } },
+                    ],
+                },
+                select: { id: true, name: true, label: true },
+                take: 5,
+            });
 
-        if (error) return { ok: false as const, error: formatSupabaseFailure(error) };
-        if (!stages || stages.length === 0) {
-            const { data: allStages } = await supabase
-                .from('board_stages')
-                .select('name, label')
-                .eq('organization_id', organizationId)
-                .eq('board_id', params.boardId);
+            if (!stages || stages.length === 0) {
+                const allStages = await prisma.boardStage.findMany({
+                    where: { organizationId, boardId: params.boardId },
+                    select: { name: true, label: true },
+                });
 
-            const stageNames = allStages?.map((s) => s.name || s.label).filter(Boolean).join(', ') || 'nenhum';
-            return { ok: false as const, error: `Estágio "${stageName}" não encontrado. Estágios disponíveis: ${stageNames}` };
+                const stageNames = allStages?.map((s) => s.name || s.label).filter(Boolean).join(', ') || 'nenhum';
+                return { ok: false as const, error: `Estágio "${stageName}" não encontrado. Estágios disponíveis: ${stageNames}` };
+            }
+
+            if (stages.length > 1) {
+                const opts = stages.map((s) => s.name || s.label || s.id).join(', ');
+                return { ok: false as const, error: `Estágio "${stageName}" está ambíguo. Possíveis: ${opts}` };
+            }
+
+            return { ok: true as const, stageId: stages[0].id };
+        } catch (err) {
+            return { ok: false as const, error: formatPrismaError(err) };
         }
-
-        if (stages.length > 1) {
-            const opts = stages.map((s) => s.name || s.label || s.id).join(', ');
-            return { ok: false as const, error: `Estágio "${stageName}" está ambíguo. Possíveis: ${opts}` };
-        }
-
-        return { ok: true as const, stageId: stages[0].id };
     };
 
     const tools = {
@@ -165,7 +145,6 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 boardId: z.string().optional().describe('ID do board (usa contexto se não fornecido)'),
             }),
             execute: async ({ boardId }) => {
-                // supabase is already initialized
                 const targetBoardId = boardId || context.boardId;
                 console.log('[AI] 🚀 analyzePipeline EXECUTED!', { targetBoardId });
 
@@ -173,43 +152,53 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                     return { error: 'Nenhum board selecionado. Vá para um board ou especifique qual.' };
                 }
 
-                const { data: deals } = await supabase
-                    .from('deals')
-                    .select('id, title, value, is_won, is_lost, stage:board_stages(name, label)')
-                    .eq('organization_id', organizationId)
-                    .eq('board_id', targetBoardId);
-
-                const openDeals = deals?.filter(d => !d.is_won && !d.is_lost) || [];
-                const wonDeals = deals?.filter(d => d.is_won) || [];
-                const lostDeals = deals?.filter(d => d.is_lost) || [];
-
-                const totalValue = openDeals.reduce((sum, d) => sum + (d.value || 0), 0);
-                const wonValue = wonDeals.reduce((sum, d) => sum + (d.value || 0), 0);
-                const winRate = wonDeals.length + lostDeals.length > 0
-                    ? Math.round(wonDeals.length / (wonDeals.length + lostDeals.length) * 100)
-                    : 0;
-
-                // Agrupar por estágio
-                const stageMap = new Map<string, { count: number; value: number }>();
-                openDeals.forEach((deal: any) => {
-                    const stageName = deal.stage?.name || deal.stage?.label || 'Sem estágio';
-                    const existing = stageMap.get(stageName) || { count: 0, value: 0 };
-                    stageMap.set(stageName, {
-                        count: existing.count + 1,
-                        value: existing.value + (deal.value || 0)
+                try {
+                    const deals = await prisma.deal.findMany({
+                        where: { organizationId, boardId: targetBoardId },
+                        select: {
+                            id: true,
+                            title: true,
+                            value: true,
+                            isWon: true,
+                            isLost: true,
+                            stage: { select: { name: true, label: true } },
+                        },
                     });
-                });
 
-                return {
-                    totalDeals: deals?.length || 0,
-                    openDeals: openDeals.length,
-                    wonDeals: wonDeals.length,
-                    lostDeals: lostDeals.length,
-                    winRate: `${winRate}%`,
-                    pipelineValue: `R$ ${totalValue.toLocaleString('pt-BR')}`,
-                    wonValue: `R$ ${wonValue.toLocaleString('pt-BR')}`,
-                    stageBreakdown: Object.fromEntries(stageMap)
-                };
+                    const openDeals = deals.filter(d => !d.isWon && !d.isLost);
+                    const wonDeals = deals.filter(d => d.isWon);
+                    const lostDeals = deals.filter(d => d.isLost);
+
+                    const totalValue = openDeals.reduce((sum, d) => sum + Number(d.value || 0), 0);
+                    const wonValue = wonDeals.reduce((sum, d) => sum + Number(d.value || 0), 0);
+                    const winRate = wonDeals.length + lostDeals.length > 0
+                        ? Math.round(wonDeals.length / (wonDeals.length + lostDeals.length) * 100)
+                        : 0;
+
+                    // Agrupar por estágio
+                    const stageMap = new Map<string, { count: number; value: number }>();
+                    openDeals.forEach((deal: any) => {
+                        const stageName = deal.stage?.name || deal.stage?.label || 'Sem estágio';
+                        const existing = stageMap.get(stageName) || { count: 0, value: 0 };
+                        stageMap.set(stageName, {
+                            count: existing.count + 1,
+                            value: existing.value + Number(deal.value || 0)
+                        });
+                    });
+
+                    return {
+                        totalDeals: deals.length,
+                        openDeals: openDeals.length,
+                        wonDeals: wonDeals.length,
+                        lostDeals: lostDeals.length,
+                        winRate: `${winRate}%`,
+                        pipelineValue: `R$ ${totalValue.toLocaleString('pt-BR')}`,
+                        wonValue: `R$ ${wonValue.toLocaleString('pt-BR')}`,
+                        stageBreakdown: Object.fromEntries(stageMap)
+                    };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -219,7 +208,6 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 boardId: z.string().optional(),
             }),
             execute: async ({ boardId }) => {
-                // supabase is already initialized
                 const targetBoardId = boardId || context.boardId;
                 console.log('[AI] 📊 getBoardMetrics EXECUTED!');
 
@@ -227,30 +215,33 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                     return { error: 'Nenhum board selecionado.' };
                 }
 
-                const { data: deals } = await supabase
-                    .from('deals')
-                    .select('id, value, is_won, is_lost, created_at')
-                    .eq('organization_id', organizationId)
-                    .eq('board_id', targetBoardId);
+                try {
+                    const deals = await prisma.deal.findMany({
+                        where: { organizationId, boardId: targetBoardId },
+                        select: { id: true, value: true, isWon: true, isLost: true, createdAt: true },
+                    });
 
-                const total = deals?.length || 0;
-                const won = deals?.filter(d => d.is_won) || [];
-                const lost = deals?.filter(d => d.is_lost) || [];
-                const open = deals?.filter(d => !d.is_won && !d.is_lost) || [];
+                    const total = deals.length;
+                    const won = deals.filter(d => d.isWon);
+                    const lost = deals.filter(d => d.isLost);
+                    const open = deals.filter(d => !d.isWon && !d.isLost);
 
-                const winRate = won.length + lost.length > 0
-                    ? Math.round(won.length / (won.length + lost.length) * 100)
-                    : 0;
+                    const winRate = won.length + lost.length > 0
+                        ? Math.round(won.length / (won.length + lost.length) * 100)
+                        : 0;
 
-                return {
-                    totalDeals: total,
-                    openDeals: open.length,
-                    wonDeals: won.length,
-                    lostDeals: lost.length,
-                    winRate: `${winRate}%`,
-                    pipelineValue: `R$ ${open.reduce((s, d) => s + (d.value || 0), 0).toLocaleString('pt-BR')}`,
-                    closedValue: `R$ ${won.reduce((s, d) => s + (d.value || 0), 0).toLocaleString('pt-BR')}`
-                };
+                    return {
+                        totalDeals: total,
+                        openDeals: open.length,
+                        wonDeals: won.length,
+                        lostDeals: lost.length,
+                        winRate: `${winRate}%`,
+                        pipelineValue: `R$ ${open.reduce((s, d) => s + Number(d.value || 0), 0).toLocaleString('pt-BR')}`,
+                        closedValue: `R$ ${won.reduce((s, d) => s + Number(d.value || 0), 0).toLocaleString('pt-BR')}`
+                    };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -262,15 +253,14 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 limit: z.number().optional().default(5),
             }),
             execute: async ({ query, limit }) => {
-                // supabase is already initialized
                 const cleanedQuery = String(query)
                     .trim()
                     // remove aspas comuns no início/fim (modelo costuma mandar "Nike")
-                    .replace(/^["'“”‘’]+/, '')
-                    .replace(/["'“”‘’]+$/, '')
+                    .replace(/^["'""'']+/, '')
+                    .replace(/["'""'']+$/, '')
                     .trim();
 
-                // Normalize pontuação e remova palavras “decorativas” que o modelo costuma incluir
+                // Normalize pontuação e remova palavras "decorativas" que o modelo costuma incluir
                 // (ex.: "buscar deal Nike"), para evitar falso negativo.
                 const normalizedQuery = cleanedQuery
                     // troca pontuações por espaço
@@ -291,58 +281,65 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                     return { error: 'Informe um termo de busca.' };
                 }
 
-                let queryBuilder = supabase
-                    .from('deals')
-                    .select('id, title, value, is_won, is_lost, stage:board_stages(name, label), contact:contacts(name)')
-                    .limit(limit);
+                try {
+                    const terms = effectiveQuery
+                        .split(' ')
+                        .map((t) => t.trim())
+                        .filter(Boolean);
 
-                const terms = effectiveQuery
-                    .split(' ')
-                    .map((t) => t.trim())
-                    .filter(Boolean);
+                    const titleFilter = terms.length <= 1
+                        ? { title: { contains: effectiveQuery, mode: 'insensitive' as const } }
+                        : { OR: terms.map((t) => ({ title: { contains: t, mode: 'insensitive' as const } })) };
 
-                if (terms.length <= 1) {
-                    queryBuilder = queryBuilder.ilike('title', `%${effectiveQuery}%`);
-                } else {
-                    // OR: title contém qualquer termo (mais robusto do que exigir a frase inteira)
-                    // Ex.: "deal Nike" -> encontra "Nike"
-                    queryBuilder = queryBuilder.or(
-                        terms.map((t) => `title.ilike.%${t}%`).join(',')
-                    );
+                    let orgFilter: any;
+                    let boardFilter: any = {};
+
+                    if (context.boardId) {
+                        // Segurança: só permite consultar por board_id se o board for do mesmo tenant.
+                        const guard = await ensureBoardBelongsToOrganization(context.boardId);
+                        if (!guard.ok) return { error: guard.error };
+
+                        // Compat: inclui deals legados que ficaram com organization_id NULL.
+                        // Como o board já foi validado no tenant, isso não vaza dados.
+                        boardFilter = { boardId: context.boardId };
+                        orgFilter = { OR: [{ organizationId }, { organizationId: null }] };
+                    } else {
+                        // Sem board no contexto: sempre filtra por organization_id.
+                        orgFilter = { organizationId };
+                    }
+
+                    const deals = await prisma.deal.findMany({
+                        where: {
+                            ...titleFilter,
+                            ...boardFilter,
+                            ...orgFilter,
+                        },
+                        select: {
+                            id: true,
+                            title: true,
+                            value: true,
+                            isWon: true,
+                            isLost: true,
+                            stage: { select: { name: true, label: true } },
+                            contact: { select: { name: true } },
+                        },
+                        take: limit,
+                    });
+
+                    return {
+                        count: deals.length,
+                        deals: deals.map((d: any) => ({
+                            id: d.id,
+                            title: d.title,
+                            value: `R$ ${Number(d.value || 0).toLocaleString('pt-BR')}`,
+                            stage: d.stage?.name || d.stage?.label || 'N/A',
+                            contact: d.contact?.name || 'N/A',
+                            status: d.isWon ? '✅ Ganho' : d.isLost ? '❌ Perdido' : '🔄 Aberto'
+                        }))
+                    };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
                 }
-
-                if (context.boardId) {
-                    // Segurança: só permite consultar por board_id se o board for do mesmo tenant.
-                    const guard = await ensureBoardBelongsToOrganization(context.boardId);
-                    if (!guard.ok) return { error: guard.error };
-
-                    // Compat: inclui deals legados que ficaram com organization_id NULL.
-                    // Como o board já foi validado no tenant, isso não vaza dados.
-                    queryBuilder = queryBuilder
-                        .eq('board_id', context.boardId)
-                        .or(`organization_id.eq.${organizationId},organization_id.is.null`);
-                } else {
-                    // Sem board no contexto: sempre filtra por organization_id.
-                    queryBuilder = queryBuilder.eq('organization_id', organizationId);
-                }
-
-                const { data: deals, error: dealsError } = await queryBuilder;
-
-                if (dealsError) {
-                    return { error: formatSupabaseFailure(dealsError) };
-                }
-
-                return {
-                    count: deals?.length || 0,
-                    deals: deals?.map((d: any) => ({
-                        id: d.id,
-                        title: d.title,
-                        value: `R$ ${(d.value || 0).toLocaleString('pt-BR')}`,
-                        stage: d.stage?.name || d.stage?.label || 'N/A',
-                        contact: d.contact?.name || 'N/A',
-                        status: d.is_won ? '✅ Ganho' : d.is_lost ? '❌ Perdido' : '🔄 Aberto'
-                    })) || []
-                };
             },
         }),
 
@@ -353,26 +350,34 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 limit: z.number().optional().default(5),
             }),
             execute: async ({ query, limit }) => {
-                // supabase is already initialized
                 console.log('[AI] 🔍 searchContacts EXECUTED!', query);
 
-                const { data: contacts } = await supabase
-                    .from('contacts')
-                    .select('id, name, email, phone, company_name')
-                    .eq('organization_id', organizationId)
-                    .or(`name.ilike.%${query}%,email.ilike.%${query}%`)
-                    .limit(limit);
+                try {
+                    const contacts = await prisma.contact.findMany({
+                        where: {
+                            organizationId,
+                            OR: [
+                                { name: { contains: query, mode: 'insensitive' } },
+                                { email: { contains: query, mode: 'insensitive' } },
+                            ],
+                        },
+                        select: { id: true, name: true, email: true, phone: true, companyName: true },
+                        take: limit,
+                    });
 
-                return {
-                    count: contacts?.length || 0,
-                    contacts: contacts?.map(c => ({
-                        id: c.id,
-                        name: c.name,
-                        email: c.email || 'N/A',
-                        phone: c.phone || 'N/A',
-                        company: c.company_name || 'N/A'
-                    })) || []
-                };
+                    return {
+                        count: contacts.length,
+                        contacts: contacts.map(c => ({
+                            id: c.id,
+                            name: c.name,
+                            email: c.email || 'N/A',
+                            phone: c.phone || 'N/A',
+                            company: c.companyName || 'N/A'
+                        }))
+                    };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -385,7 +390,6 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 limit: z.number().optional().default(10),
             }),
             execute: async ({ stageName, stageId, boardId, limit }) => {
-                // supabase is already initialized
                 const targetBoardId = boardId || context.boardId;
 
                 console.log('[AI] 📋 listDealsByStage EXECUTING:', {
@@ -425,47 +429,60 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 // If stageId is a partial UUID, search by prefix
                 if (finalStageId && !isValidUuid(finalStageId) && isUuidPrefix(finalStageId)) {
                     console.log('[AI] ⚠️ Partial UUID, searching by prefix:', finalStageId);
-                    const { data: stages } = await supabase
-                        .from('board_stages')
-                        .select('id, name')
-                        .eq('organization_id', organizationId)
-                        .eq('board_id', targetBoardId)
-                        .ilike('id', `${finalStageId}%`);
+                    try {
+                        const stages = await prisma.boardStage.findMany({
+                            where: {
+                                organizationId,
+                                boardId: targetBoardId,
+                                id: finalStageId,
+                            },
+                            select: { id: true, name: true },
+                        });
 
-                    if (stages && stages.length > 0) {
-                        finalStageId = stages[0].id;
-                        console.log('[AI] ✅ Found stage by prefix:', stages[0].name, finalStageId);
-                    } else {
+                        if (stages && stages.length > 0) {
+                            finalStageId = stages[0].id;
+                            console.log('[AI] ✅ Found stage by prefix:', stages[0].name, finalStageId);
+                        } else {
+                            finalStageId = undefined;
+                        }
+                    } catch {
                         finalStageId = undefined;
                     }
                 }
 
                 // If no valid stageId, search by name
                 if (!finalStageId && effectiveStageName) {
-                    const { data: stages, error: stageError } = await supabase
-                        .from('board_stages')
-                        .select('id, name, label')
-                        .eq('organization_id', organizationId)
-                        .eq('board_id', targetBoardId)
-                        .or(`name.ilike.%${effectiveStageName}%,label.ilike.%${effectiveStageName}%`);
+                    try {
+                        const stages = await prisma.boardStage.findMany({
+                            where: {
+                                organizationId,
+                                boardId: targetBoardId,
+                                OR: [
+                                    { name: { contains: effectiveStageName, mode: 'insensitive' } },
+                                    { label: { contains: effectiveStageName, mode: 'insensitive' } },
+                                ],
+                            },
+                            select: { id: true, name: true, label: true },
+                        });
 
-                    console.log('[AI] 📋 Stage search by name:', {
-                        stageName: effectiveStageName,
-                        foundStages: stages,
-                        stageError
-                    });
+                        console.log('[AI] 📋 Stage search by name:', {
+                            stageName: effectiveStageName,
+                            foundStages: stages,
+                        });
 
-                    if (stages && stages.length > 0) {
-                        finalStageId = stages[0].id;
-                    } else {
-                        const { data: allStages } = await supabase
-                            .from('board_stages')
-                            .select('name, label')
-                            .eq('organization_id', organizationId)
-                            .eq('board_id', targetBoardId);
+                        if (stages && stages.length > 0) {
+                            finalStageId = stages[0].id;
+                        } else {
+                            const allStages = await prisma.boardStage.findMany({
+                                where: { organizationId, boardId: targetBoardId },
+                                select: { name: true, label: true },
+                            });
 
-                        const stageNames = allStages?.map(s => s.name || s.label).join(', ') || 'nenhum';
-                        return { error: `Estágio "${effectiveStageName}" não encontrado. Estágios disponíveis: ${stageNames}` };
+                            const stageNames = allStages?.map(s => s.name || s.label).join(', ') || 'nenhum';
+                            return { error: `Estágio "${effectiveStageName}" não encontrado. Estágios disponíveis: ${stageNames}` };
+                        }
+                    } catch (err) {
+                        return { error: formatPrismaError(err) };
                     }
                 }
 
@@ -475,42 +492,51 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
 
                 console.log('[AI] 📋 Querying deals with stageId:', finalStageId);
 
-                const { data: deals, error: dealsError } = await supabase
-                    .from('deals')
-                    .select('id, title, value, updated_at, is_won, is_lost, contact:contacts(name)')
-                    .eq('board_id', targetBoardId)
-                    .eq('stage_id', finalStageId)
-                    .or(`organization_id.eq.${organizationId},organization_id.is.null`)
-                    .order('value', { ascending: false })
-                    // Busca mais do que o necessário e filtra client-side para tratar legacy NULL
-                    .limit(Math.max(limit * 5, 50));
+                try {
+                    const deals = await prisma.deal.findMany({
+                        where: {
+                            boardId: targetBoardId,
+                            stageId: finalStageId,
+                            organizationId,
+                        },
+                        select: {
+                            id: true,
+                            title: true,
+                            value: true,
+                            updatedAt: true,
+                            isWon: true,
+                            isLost: true,
+                            contact: { select: { name: true } },
+                        },
+                        orderBy: { value: 'desc' },
+                        // Busca mais do que o necessário e filtra client-side para tratar legacy NULL
+                        take: Math.max(limit * 5, 50),
+                    });
 
-                if (dealsError) {
-                    return { error: formatSupabaseFailure(dealsError) };
+                    console.log('[AI] 📋 Deals query result:', {
+                        dealsCount: deals.length,
+                        deals,
+                    });
+
+                    // Compat: alguns deals legados podem ter is_won/is_lost = NULL.
+                    // Nesse caso, consideramos como "aberto".
+                    const openDeals = deals.filter((d: any) => !d.isWon && !d.isLost);
+                    const finalDeals = openDeals.slice(0, limit);
+                    const totalValue = finalDeals.reduce((s: number, d: any) => s + Number(d.value || 0), 0);
+
+                    return {
+                        count: finalDeals.length,
+                        totalValue: `R$ ${totalValue.toLocaleString('pt-BR')}`,
+                        deals: finalDeals.map((d: any) => ({
+                            id: d.id,
+                            title: d.title,
+                            value: `R$ ${Number(d.value || 0).toLocaleString('pt-BR')}`,
+                            contact: d.contact?.name || 'N/A'
+                        }))
+                    };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
                 }
-
-                console.log('[AI] 📋 Deals query result:', {
-                    dealsCount: deals?.length,
-                    deals,
-                    dealsError
-                });
-
-                // Compat: alguns deals legados podem ter is_won/is_lost = NULL.
-                // Nesse caso, consideramos como "aberto".
-                const openDeals = (deals || []).filter((d: any) => !d.is_won && !d.is_lost);
-                const finalDeals = openDeals.slice(0, limit);
-                const totalValue = finalDeals.reduce((s: number, d: any) => s + (d.value || 0), 0) || 0;
-
-                return {
-                    count: finalDeals.length || 0,
-                    totalValue: `R$ ${totalValue.toLocaleString('pt-BR')}`,
-                    deals: finalDeals.map((d: any) => ({
-                        id: d.id,
-                        title: d.title,
-                        value: `R$ ${(d.value || 0).toLocaleString('pt-BR')}`,
-                        contact: d.contact?.name || 'N/A'
-                    })) || []
-                };
             },
         }),
         listStagnantDeals: tool({
@@ -534,33 +560,47 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 const cutoffDate = new Date();
                 cutoffDate.setDate(cutoffDate.getDate() - daysStagnant);
 
-                const { data: deals } = await supabase
-                    .from('deals')
-                    .select('id, title, value, updated_at, is_won, is_lost, contact:contacts(name)')
-                    .eq('board_id', targetBoardId)
-                    .or(`organization_id.eq.${organizationId},organization_id.is.null`)
-                    .lt('updated_at', cutoffDate.toISOString())
-                    .order('updated_at', { ascending: true })
-                    // Busca mais e filtra client-side para tratar legacy NULL
-                    .limit(Math.max(limit * 5, 50));
+                try {
+                    const deals = await prisma.deal.findMany({
+                        where: {
+                            boardId: targetBoardId,
+                            organizationId,
+                            updatedAt: { lt: cutoffDate },
+                        },
+                        select: {
+                            id: true,
+                            title: true,
+                            value: true,
+                            updatedAt: true,
+                            isWon: true,
+                            isLost: true,
+                            contact: { select: { name: true } },
+                        },
+                        orderBy: { updatedAt: 'asc' },
+                        // Busca mais e filtra client-side para tratar legacy NULL
+                        take: Math.max(limit * 5, 50),
+                    });
 
-                const openDeals = (deals || []).filter((d: any) => !d.is_won && !d.is_lost);
-                const finalDeals = openDeals.slice(0, limit);
+                    const openDeals = deals.filter((d: any) => !d.isWon && !d.isLost);
+                    const finalDeals = openDeals.slice(0, limit);
 
-                return {
-                    count: finalDeals.length || 0,
-                    message: `${finalDeals.length || 0} deals parados há mais de ${daysStagnant} dias`,
-                    deals: finalDeals.map((d: any) => {
-                        const days = Math.floor((Date.now() - new Date(d.updated_at).getTime()) / (1000 * 60 * 60 * 24));
-                        return {
-                            id: d.id,
-                            title: d.title,
-                            diasParado: days,
-                            value: `R$ ${(d.value || 0).toLocaleString('pt-BR')}`,
-                            contact: d.contact?.name || 'N/A'
-                        };
-                    }) || []
-                };
+                    return {
+                        count: finalDeals.length,
+                        message: `${finalDeals.length} deals parados há mais de ${daysStagnant} dias`,
+                        deals: finalDeals.map((d: any) => {
+                            const days = Math.floor((Date.now() - new Date(d.updatedAt).getTime()) / (1000 * 60 * 60 * 24));
+                            return {
+                                id: d.id,
+                                title: d.title,
+                                diasParado: days,
+                                value: `R$ ${Number(d.value || 0).toLocaleString('pt-BR')}`,
+                                contact: d.contact?.name || 'N/A'
+                            };
+                        })
+                    };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -577,41 +617,54 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                     return { error: 'Nenhum board selecionado.' };
                 }
 
-                const now = new Date().toISOString();
+                const now = new Date();
 
-                const { data: overdueActivities } = await supabase
-                    .from('activities')
-                    .select('deal_id, date, title')
-                    .eq('organization_id', organizationId)
-                    .lt('date', now)
-                    .eq('completed', false)
-                    .order('date', { ascending: true });
+                try {
+                    const overdueActivities = await prisma.activity.findMany({
+                        where: {
+                            organizationId,
+                            date: { lt: now },
+                            completed: false,
+                        },
+                        select: { dealId: true, date: true, title: true },
+                        orderBy: { date: 'asc' },
+                    });
 
-                if (!overdueActivities || overdueActivities.length === 0) {
-                    return { count: 0, message: 'Nenhuma atividade atrasada encontrada! 🎉', deals: [] };
+                    if (overdueActivities.length === 0) {
+                        return { count: 0, message: 'Nenhuma atividade atrasada encontrada! 🎉', deals: [] };
+                    }
+
+                    const dealIds = [...new Set(overdueActivities.map(a => a.dealId).filter(Boolean))] as string[];
+
+                    const deals = await prisma.deal.findMany({
+                        where: {
+                            organizationId,
+                            boardId: targetBoardId,
+                            id: { in: dealIds },
+                        },
+                        select: {
+                            id: true,
+                            title: true,
+                            value: true,
+                            contact: { select: { name: true } },
+                        },
+                        take: limit,
+                    });
+
+                    return {
+                        count: deals.length,
+                        message: `⚠️ ${deals.length} deals com atividades atrasadas`,
+                        deals: deals.map((d: any) => ({
+                            id: d.id,
+                            title: d.title,
+                            value: `R$ ${Number(d.value || 0).toLocaleString('pt-BR')}`,
+                            contact: d.contact?.name || 'N/A',
+                            overdueCount: overdueActivities.filter(a => a.dealId === d.id).length
+                        }))
+                    };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
                 }
-
-                const dealIds = [...new Set(overdueActivities.map(a => a.deal_id).filter(Boolean))];
-
-                const { data: deals } = await supabase
-                    .from('deals')
-                    .select('id, title, value, contact:contacts(name)')
-                    .eq('organization_id', organizationId)
-                    .eq('board_id', targetBoardId)
-                    .in('id', dealIds)
-                    .limit(limit);
-
-                return {
-                    count: deals?.length || 0,
-                    message: `⚠️ ${deals?.length || 0} deals com atividades atrasadas`,
-                    deals: deals?.map((d: any) => ({
-                        id: d.id,
-                        title: d.title,
-                        value: `R$ ${(d.value || 0).toLocaleString('pt-BR')}`,
-                        contact: d.contact?.name || 'N/A',
-                        overdueCount: overdueActivities.filter(a => a.deal_id === d.id).length
-                    })) || []
-                };
             },
         }),
 
@@ -628,36 +681,37 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                     return { error: 'Nenhum deal especificado.' };
                 }
 
-                const { data: deal, error } = await supabase
-                    .from('deals')
-                    .select(`
-                        *,
-                        contact:contacts(name, email, phone),
-                        stage:board_stages(name, label),
-                        activities(id, type, title, completed, date)
-                    `)
-                    .eq('organization_id', organizationId)
-                    .eq('id', targetDealId)
-                    .single();
+                try {
+                    const deal = await prisma.deal.findFirst({
+                        where: { organizationId, id: targetDealId },
+                        include: {
+                            contact: { select: { name: true, email: true, phone: true } },
+                            stage: { select: { name: true, label: true } },
+                            activities: { select: { id: true, type: true, title: true, completed: true, date: true } },
+                        },
+                    });
 
-                if (error || !deal) {
-                    return { error: 'Deal não encontrado.' };
+                    if (!deal) {
+                        return { error: 'Deal não encontrado.' };
+                    }
+
+                    const pendingActivities = deal.activities?.filter((a: any) => !a.completed) || [];
+
+                    return {
+                        id: deal.id,
+                        title: deal.title,
+                        value: `R$ ${Number(deal.value || 0).toLocaleString('pt-BR')}`,
+                        status: deal.isWon ? '✅ Ganho' : deal.isLost ? '❌ Perdido' : '🔄 Aberto',
+                        stage: (deal.stage as any)?.name || (deal.stage as any)?.label || 'N/A',
+                        priority: deal.priority || 'medium',
+                        contact: (deal.contact as any)?.name || 'N/A',
+                        contactEmail: (deal.contact as any)?.email || 'N/A',
+                        pendingActivities: pendingActivities.length,
+                        createdAt: deal.createdAt
+                    };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
                 }
-
-                const pendingActivities = deal.activities?.filter((a: any) => !a.completed) || [];
-
-                return {
-                    id: deal.id,
-                    title: deal.title,
-                    value: `R$ ${(deal.value || 0).toLocaleString('pt-BR')}`,
-                    status: deal.is_won ? '✅ Ganho' : deal.is_lost ? '❌ Perdido' : '🔄 Aberto',
-                    stage: (deal.stage as any)?.name || (deal.stage as any)?.label || 'N/A',
-                    priority: deal.priority || 'medium',
-                    contact: (deal.contact as any)?.name || 'N/A',
-                    contactEmail: (deal.contact as any)?.email || 'N/A',
-                    pendingActivities: pendingActivities.length,
-                    createdAt: deal.created_at
-                };
             },
         }),
 
@@ -678,51 +732,50 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                     return { error: 'Nenhum deal especificado.' };
                 }
 
-                const { data: deal } = await supabase
-                    .from('deals')
-                    .select('board_id, title')
-                    .eq('organization_id', organizationId)
-                    .eq('id', targetDealId)
-                    .single();
+                try {
+                    const deal = await prisma.deal.findFirst({
+                        where: { organizationId, id: targetDealId },
+                        select: { boardId: true, title: true },
+                    });
 
-                if (!deal) {
-                    return { error: 'Deal não encontrado.' };
-                }
-
-                let targetStageId = stageId;
-                if (!targetStageId && stageName) {
-                    const { data: stages } = await supabase
-                        .from('board_stages')
-                        .select('id, name, label')
-                        .eq('organization_id', organizationId)
-                        .eq('board_id', deal.board_id)
-                        .or(`name.ilike.%${stageName}%,label.ilike.%${stageName}%`);
-
-                    if (stages && stages.length > 0) {
-                        targetStageId = stages[0].id;
-                    } else {
-                        return { error: `Estágio "${stageName}" não encontrado.` };
+                    if (!deal) {
+                        return { error: 'Deal não encontrado.' };
                     }
+
+                    let targetStageId = stageId;
+                    if (!targetStageId && stageName) {
+                        const stages = await prisma.boardStage.findMany({
+                            where: {
+                                organizationId,
+                                boardId: deal.boardId,
+                                OR: [
+                                    { name: { contains: stageName, mode: 'insensitive' } },
+                                    { label: { contains: stageName, mode: 'insensitive' } },
+                                ],
+                            },
+                            select: { id: true, name: true, label: true },
+                        });
+
+                        if (stages && stages.length > 0) {
+                            targetStageId = stages[0].id;
+                        } else {
+                            return { error: `Estágio "${stageName}" não encontrado.` };
+                        }
+                    }
+
+                    if (!targetStageId) {
+                        return { error: 'Especifique o estágio destino.' };
+                    }
+
+                    await prisma.deal.updateMany({
+                        where: { organizationId, id: targetDealId },
+                        data: { stageId: targetStageId },
+                    });
+
+                    return { success: true, message: `Deal "${deal.title}" movido com sucesso!` };
+                } catch (err) {
+                    return { success: false, error: (err as Error).message };
                 }
-
-                if (!targetStageId) {
-                    return { error: 'Especifique o estágio destino.' };
-                }
-
-                const { error } = await supabase
-                    .from('deals')
-                    .update({
-                        stage_id: targetStageId,
-                        updated_at: new Date().toISOString()
-                    })
-                    .eq('organization_id', organizationId)
-                    .eq('id', targetDealId);
-
-                if (error) {
-                    return { success: false, error: error.message };
-                }
-
-                return { success: true, message: `Deal "${deal.title}" movido com sucesso!` };
             },
         }),
 
@@ -743,75 +796,71 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                     return { error: 'Nenhum board selecionado.' };
                 }
 
-                const { data: stages } = await supabase
-                    .from('board_stages')
-                    .select('id')
-                    .eq('organization_id', organizationId)
-                    .eq('board_id', targetBoardId)
-                    .order('order', { ascending: true })
-                    .limit(1);
+                try {
+                    const firstStage = await prisma.boardStage.findFirst({
+                        where: { organizationId, boardId: targetBoardId },
+                        select: { id: true },
+                        orderBy: { order: 'asc' },
+                    });
 
-                const firstStageId = stages?.[0]?.id;
-                if (!firstStageId) {
-                    return { error: 'Board não tem estágios configurados.' };
-                }
-
-                let contactId: string | null = null;
-                if (contactName) {
-                    const { data: existing } = await supabase
-                        .from('contacts')
-                        .select('id')
-                        .eq('organization_id', organizationId)
-                        .ilike('name', contactName)
-                        .limit(1);
-
-                    if (existing && existing.length > 0) {
-                        contactId = existing[0].id;
-                    } else {
-                        const { data: newContact } = await supabase
-                            .from('contacts')
-                            .insert({
-                                organization_id: organizationId,
-                                name: contactName,
-                                owner_id: userId,
-                            })
-                            .select('id')
-                            .single();
-
-                        contactId = newContact?.id ?? null;
+                    const firstStageId = firstStage?.id;
+                    if (!firstStageId) {
+                        return { error: 'Board não tem estágios configurados.' };
                     }
+
+                    let contactId: string | null = null;
+                    if (contactName) {
+                        const existing = await prisma.contact.findFirst({
+                            where: {
+                                organizationId,
+                                name: { equals: contactName, mode: 'insensitive' },
+                            },
+                            select: { id: true },
+                        });
+
+                        if (existing) {
+                            contactId = existing.id;
+                        } else {
+                            const newContact = await prisma.contact.create({
+                                data: {
+                                    organizationId,
+                                    name: contactName,
+                                    ownerId: userId,
+                                },
+                                select: { id: true },
+                            });
+                            contactId = newContact.id;
+                        }
+                    }
+
+                    const deal = await prisma.deal.create({
+                        data: {
+                            organizationId,
+                            boardId: targetBoardId,
+                            title,
+                            value,
+                            contactId,
+                            stageId: firstStageId,
+                            priority: 'medium',
+                            isWon: false,
+                            isLost: false,
+                            ownerId: userId,
+                        },
+                        select: { id: true, title: true, value: true },
+                    });
+
+                    return {
+                        success: true,
+                        deal: {
+                            id: deal.id,
+                            title: deal.title,
+                            value: `R$ ${Number(deal.value || 0).toLocaleString('pt-BR')}`
+                        },
+                        message: `Deal "${title}" criado com sucesso!`
+                    };
+                } catch (err) {
+                    return { success: false, error: (err as Error).message };
                 }
-
-                const { data: deal, error } = await supabase
-                    .from('deals')
-                    .insert({
-                        organization_id: organizationId,
-                        board_id: targetBoardId,
-                        title,
-                        value,
-                        contact_id: contactId,
-                        stage_id: firstStageId,
-                        priority: 'medium',
-                        is_won: false,
-                        is_lost: false,
-                        owner_id: userId,
-                    })
-                    .select('id, title, value')
-                    .single();
-
-                if (error || !deal) {
-                    return { success: false, error: error?.message ?? 'Falha ao criar deal' };
-                }
-
-                return {
-                    success: true,
-                    deal: {
-                        id: deal.id,
-                        title: deal.title,
-                        value: `R$ ${(deal.value || 0).toLocaleString('pt-BR')}`
-                    },
-                    message: `Deal "${title}" criado com sucesso!`
-                };
             },
         }),
 
@@ -832,22 +881,21 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                     return { error: 'Nenhum deal especificado.' };
                 }
 
-                const updateData: Record<string, unknown> = { updated_at: new Date().toISOString() };
+                const updateData: Record<string, unknown> = {};
                 if (title) updateData.title = title;
                 if (value !== undefined) updateData.value = value;
                 if (priority) updateData.priority = priority;
 
-                const { error } = await supabase
-                    .from('deals')
-                    .update(updateData)
-                    .eq('organization_id', organizationId)
-                    .eq('id', targetDealId);
+                try {
+                    await prisma.deal.updateMany({
+                        where: { organizationId, id: targetDealId },
+                        data: updateData,
+                    });
 
-                if (error) {
-                    return { success: false, error: error.message };
+                    return { success: true, message: 'Deal atualizado com sucesso!' };
+                } catch (err) {
+                    return { success: false, error: (err as Error).message };
                 }
-
-                return { success: true, message: 'Deal atualizado com sucesso!' };
             },
         }),
 
@@ -861,108 +909,120 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
             }),
             needsApproval: !bypassApproval,
             execute: async ({ dealId, dealTitle, stageName, wonValue }) => {
-                // supabase is already initialized
                 let targetDealId = dealId || context.dealId;
                 const targetBoardId = context.boardId;
 
                 console.log('[AI] 🎉 markDealAsWon EXECUTING:', { dealId, dealTitle, stageName, targetBoardId });
 
-                // Smart lookup: find deal by title or stage if no dealId
-                if (!targetDealId && targetBoardId) {
-                    let query = supabase
-                        .from('deals')
-                        .select('id, title, value, is_won, is_lost, stage:board_stages(name)')
-                        .eq('organization_id', organizationId)
-                        .eq('board_id', targetBoardId);
+                try {
+                    // Smart lookup: find deal by title or stage if no dealId
+                    if (!targetDealId && targetBoardId) {
+                        const whereClause: any = {
+                            organizationId,
+                            boardId: targetBoardId,
+                        };
 
-                    // Find by title
-                    if (dealTitle) {
-                        query = query.ilike('title', `%${dealTitle}%`);
-                    }
+                        // Find by title
+                        if (dealTitle) {
+                            whereClause.title = { contains: dealTitle, mode: 'insensitive' };
+                        }
 
-                    const { data: foundDeals } = await query.limit(20);
+                        const foundDeals = await prisma.deal.findMany({
+                            where: whereClause,
+                            select: {
+                                id: true,
+                                title: true,
+                                value: true,
+                                isWon: true,
+                                isLost: true,
+                                stage: { select: { name: true } },
+                            },
+                            take: 20,
+                        });
 
-                    // Compat: deals legados podem ter is_won/is_lost = NULL.
-                    // Consideramos como "aberto" na busca.
-                    const openFoundDeals = (foundDeals || []).filter((d: any) => !d.is_won && !d.is_lost);
+                        // Compat: deals legados podem ter is_won/is_lost = NULL.
+                        // Consideramos como "aberto" na busca.
+                        const openFoundDeals = foundDeals.filter((d: any) => !d.isWon && !d.isLost);
 
-                    console.log('[AI] 🔍 Found deals:', {
-                        foundDealsCount: foundDeals?.length,
-                        openFoundDealsCount: openFoundDeals.length,
-                        openFoundDeals
-                    });
+                        console.log('[AI] 🔍 Found deals:', {
+                            foundDealsCount: foundDeals.length,
+                            openFoundDealsCount: openFoundDeals.length,
+                            openFoundDeals
+                        });
 
-                    // If looking for stage, filter by stage name
-                    if (stageName && openFoundDeals) {
-                        const filtered = openFoundDeals.filter((d: any) =>
-                            d.stage?.name?.toLowerCase().includes(stageName.toLowerCase())
-                        );
-                        if (filtered.length === 1) {
-                            targetDealId = filtered[0].id;
-                        } else if (filtered.length > 1) {
+                        // If looking for stage, filter by stage name
+                        if (stageName && openFoundDeals) {
+                            const filtered = openFoundDeals.filter((d: any) =>
+                                d.stage?.name?.toLowerCase().includes(stageName.toLowerCase())
+                            );
+                            if (filtered.length === 1) {
+                                targetDealId = filtered[0].id;
+                            } else if (filtered.length > 1) {
+                                return {
+                                    error: `Encontrei ${filtered.length} deals em "${stageName}". Especifique qual: ${filtered.map((d: any) => d.title).join(', ')}`
+                                };
+                            }
+                        } else if (openFoundDeals.length === 1) {
+                            targetDealId = openFoundDeals[0].id;
+                        } else if (dealTitle && openFoundDeals.length > 0) {
+                            // Multiple matches by title
                             return {
-                                error: `Encontrei ${filtered.length} deals em "${stageName}". Especifique qual: ${filtered.map((d: any) => d.title).join(', ')}`
+                                error: `Encontrei ${openFoundDeals.length} deals com "${dealTitle}". Especifique qual: ${openFoundDeals.map((d: any) => d.title).join(', ')}`
                             };
                         }
-                    } else if (openFoundDeals.length === 1) {
-                        targetDealId = openFoundDeals[0].id;
-                    } else if (dealTitle && openFoundDeals.length > 0) {
-                        // Multiple matches by title
-                        return {
-                            error: `Encontrei ${openFoundDeals.length} deals com "${dealTitle}". Especifique qual: ${openFoundDeals.map((d: any) => d.title).join(', ')}`
-                        };
                     }
-                }
 
-                if (!targetDealId) {
-                    return { error: 'Não consegui identificar o deal. Forneça o ID, título ou nome do estágio.' };
-                }
-
-                // Se existir um estágio de "Ganho" no board, também mova o card para ele.
-                // Isso evita a sensação de "não moveu" quando a UI do kanban é baseada em stage_id.
-                let wonStageId: string | null = null;
-                const wonStageNameFromContext = context.wonStage || 'Ganho';
-
-                if (targetBoardId && wonStageNameFromContext) {
-                    const { data: wonStages } = await supabase
-                        .from('board_stages')
-                        .select('id, name, label')
-                        .eq('organization_id', organizationId)
-                        .eq('board_id', targetBoardId)
-                        .or(`name.ilike.%${wonStageNameFromContext}%,label.ilike.%${wonStageNameFromContext}%`)
-                        .limit(1);
-
-                    if (wonStages && wonStages.length > 0) {
-                        wonStageId = wonStages[0].id;
+                    if (!targetDealId) {
+                        return { error: 'Não consegui identificar o deal. Forneça o ID, título ou nome do estágio.' };
                     }
+
+                    // Se existir um estágio de "Ganho" no board, também mova o card para ele.
+                    // Isso evita a sensação de "não moveu" quando a UI do kanban é baseada em stage_id.
+                    let wonStageId: string | null = null;
+                    const wonStageNameFromContext = context.wonStage || 'Ganho';
+
+                    if (targetBoardId && wonStageNameFromContext) {
+                        const wonStages = await prisma.boardStage.findMany({
+                            where: {
+                                organizationId,
+                                boardId: targetBoardId,
+                                OR: [
+                                    { name: { contains: wonStageNameFromContext, mode: 'insensitive' } },
+                                    { label: { contains: wonStageNameFromContext, mode: 'insensitive' } },
+                                ],
+                            },
+                            select: { id: true, name: true, label: true },
+                            take: 1,
+                        });
+
+                        if (wonStages && wonStages.length > 0) {
+                            wonStageId = wonStages[0].id;
+                        }
+                    }
+
+                    const updateData: any = {
+                        isWon: true,
+                        isLost: false,
+                        closedAt: new Date(),
+                    };
+                    if (wonValue !== undefined) updateData.value = wonValue;
+                    if (wonStageId) updateData.stageId = wonStageId;
+
+                    // Use update (not updateMany) so we can get back select fields
+                    const deal = await prisma.deal.update({
+                        where: { id: targetDealId },
+                        data: updateData,
+                        select: { title: true, value: true },
+                    });
+
+                    return {
+                        success: true,
+                        message: `🎉 Parabéns! Deal "${deal.title}" marcado como GANHO!`,
+                        value: `R$ ${Number(deal.value || 0).toLocaleString('pt-BR')}`
+                    };
+                } catch (err) {
+                    return { success: false, error: (err as Error).message };
                 }
-
-                const updateData: any = {
-                    is_won: true,
-                    is_lost: false,
-                    closed_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString(),
-                };
-                if (wonValue !== undefined) updateData.value = wonValue;
-                if (wonStageId) updateData.stage_id = wonStageId;
-
-                const { data: deal, error } = await supabase
-                    .from('deals')
-                    .update(updateData)
-                    .eq('organization_id', organizationId)
-                    .eq('id', targetDealId)
-                    .select('title, value')
-                    .single();
-
-                if (error || !deal) {
-                    return { success: false, error: error?.message || 'Deal não encontrado' };
-                }
-
-                return {
-                    success: true,
-                    message: `🎉 Parabéns! Deal "${deal.title}" marcado como GANHO!`,
-                    value: `R$ ${(deal.value || 0).toLocaleString('pt-BR')}`
-                };
             },
         }),
 
@@ -974,7 +1034,6 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
             }),
             needsApproval: !bypassApproval, // ✅ Requer aprovação (bypassável em dev/test)
             execute: async ({ dealId, reason }) => {
-                // supabase is already initialized
                 const targetDealId = dealId || context.dealId;
                 console.log('[AI] ❌ markDealAsLost EXECUTED!');
 
@@ -982,28 +1041,25 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                     return { error: 'Nenhum deal especificado.' };
                 }
 
-                const { data: deal, error } = await supabase
-                    .from('deals')
-                    .update({
-                        is_won: false,
-                        is_lost: true,
-                        loss_reason: reason,
-                        closed_at: new Date().toISOString(),
-                        updated_at: new Date().toISOString(),
-                    })
-                    .eq('organization_id', organizationId)
-                    .eq('id', targetDealId)
-                    .select('title')
-                    .single();
+                try {
+                    const deal = await prisma.deal.update({
+                        where: { id: targetDealId },
+                        data: {
+                            isWon: false,
+                            isLost: true,
+                            lossReason: reason,
+                            closedAt: new Date(),
+                        },
+                        select: { title: true },
+                    });
 
-                if (error || !deal) {
-                    return { success: false, error: error?.message || 'Deal não encontrado' };
+                    return {
+                        success: true,
+                        message: `Deal "${deal.title}" marcado como perdido. Motivo: ${reason}`
+                    };
+                } catch (err) {
+                    return { success: false, error: (err as Error).message };
                 }
-
-                return {
-                    success: true,
-                    message: `Deal "${deal.title}" marcado como perdido. Motivo: ${reason}`
-                };
             },
         }),
 
@@ -1015,7 +1071,6 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
             }),
             needsApproval: !bypassApproval, // ✅ Requer aprovação (bypassável em dev/test)
             execute: async ({ dealId, newOwnerId }) => {
-                // supabase is already initialized
                 const targetDealId = dealId || context.dealId;
                 console.log('[AI] 👤 assignDeal EXECUTED!');
 
@@ -1023,34 +1078,27 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                     return { error: 'Nenhum deal especificado.' };
                 }
 
-                const { data: ownerProfile } = await supabase
-                    .from('profiles')
-                    .select('first_name, nickname')
-                    .eq('organization_id', organizationId)
-                    .eq('id', newOwnerId)
-                    .single();
+                try {
+                    const ownerProfile = await prisma.profile.findFirst({
+                        where: { organizationId, id: newOwnerId },
+                        select: { firstName: true, nickname: true },
+                    });
 
-                const ownerName = ownerProfile?.nickname || ownerProfile?.first_name || 'Novo responsável';
+                    const ownerName = ownerProfile?.nickname || ownerProfile?.firstName || 'Novo responsável';
 
-                const { data: deal, error } = await supabase
-                    .from('deals')
-                    .update({
-                        owner_id: newOwnerId,
-                        updated_at: new Date().toISOString(),
-                    })
-                    .eq('organization_id', organizationId)
-                    .eq('id', targetDealId)
-                    .select('title')
-                    .single();
+                    const deal = await prisma.deal.update({
+                        where: { id: targetDealId },
+                        data: { ownerId: newOwnerId },
+                        select: { title: true },
+                    });
 
-                if (error || !deal) {
-                    return { success: false, error: error?.message || 'Deal não encontrado' };
+                    return {
+                        success: true,
+                        message: `Deal "${deal.title}" reatribuído para ${ownerName}`
+                    };
+                } catch (err) {
+                    return { success: false, error: (err as Error).message };
                 }
-
-                return {
-                    success: true,
-                    message: `Deal "${deal.title}" reatribuído para ${ownerName}`
-                };
             },
         }),
 
@@ -1065,36 +1113,34 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
             }),
             needsApproval: !bypassApproval,
             execute: async ({ title, description, dueDate, dealId, type }) => {
-                // supabase is already initialized
                 const targetDealId = dealId || context.dealId;
                 console.log('[AI] ✏️ createTask EXECUTED!', title);
 
                 const date = dueDate || new Date().toISOString();
 
-                const { data, error } = await supabase
-                    .from('activities')
-                    .insert({
-                        organization_id: organizationId,
-                        title,
-                        description,
-                        date,
-                        deal_id: targetDealId,
-                        type,
-                        owner_id: userId,
-                        completed: false,
-                    })
-                    .select()
-                    .single();
+                try {
+                    const data = await prisma.activity.create({
+                        data: {
+                            organizationId,
+                            title,
+                            description: description || null,
+                            date: new Date(date),
+                            dealId: targetDealId || null,
+                            type: type || 'TASK',
+                            ownerId: userId,
+                            completed: false,
+                        },
+                        select: { id: true, title: true, type: true },
+                    });
 
-                if (error) {
-                    return { success: false, error: error.message };
+                    return {
+                        success: true,
+                        activity: { id: data.id, title: data.title, type: data.type },
+                        message: `Atividade "${title}" criada com sucesso!`
+                    };
+                } catch (err) {
+                    return { success: false, error: (err as Error).message };
                 }
-
-                return {
-                    success: true,
-                    activity: { id: data.id, title: data.title, type: data.type },
-                    message: `Atividade "${title}" criada com sucesso!`
-                };
             },
         }),
 
@@ -1129,77 +1175,83 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 const boardGuard = await ensureBoardBelongsToOrganization(targetBoardId);
                 if (!boardGuard.ok) return { error: boardGuard.error };
 
-                // 1) Carrega deals do tenant e do board (sem vazar outros boards/tenants)
-                const { data: deals, error: dealsError } = await supabase
-                    .from('deals')
-                    .select('id, title, board_id')
-                    .eq('organization_id', organizationId)
-                    .eq('board_id', targetBoardId)
-                    .in('id', unique);
+                try {
+                    // 1) Carrega deals do tenant e do board (sem vazar outros boards/tenants)
+                    const deals = await prisma.deal.findMany({
+                        where: {
+                            organizationId,
+                            boardId: targetBoardId,
+                            id: { in: unique },
+                        },
+                        select: { id: true, title: true, boardId: true },
+                    });
 
-                if (dealsError) return { error: formatSupabaseFailure(dealsError) };
+                    const foundIds = new Set(deals.map((d: any) => d.id));
+                    const missingIds = unique.filter((id) => !foundIds.has(id));
 
-                const foundIds = new Set((deals || []).map((d: any) => d.id));
-                const missingIds = unique.filter((id) => !foundIds.has(id));
-
-                if (missingIds.length > 0 && !allowPartial) {
-                    return { error: `Alguns deals não foram encontrados neste board/organização (${missingIds.length}).` };
-                }
-
-                const stageRes = await resolveStageIdForBoard({ boardId: targetBoardId, stageId, stageName });
-                if (!stageRes.ok) return { error: stageRes.error };
-
-                const idsToMove = (deals || []).map((d: any) => d.id);
-                if (idsToMove.length === 0) {
-                    return { error: 'Nenhum deal válido encontrado para mover (cheque board/organização).' };
-                }
-
-                // 2) Atualiza em lote
-                const { error: updError } = await supabase
-                    .from('deals')
-                    .update({ stage_id: stageRes.stageId, updated_at: new Date().toISOString() })
-                    .eq('organization_id', organizationId)
-                    .eq('board_id', targetBoardId)
-                    .in('id', idsToMove);
-
-                if (updError) return { error: formatSupabaseFailure(updError) };
-
-                // 3) “Automação simples”: cria 1 tarefa por deal (com guardrail extra)
-                let followUpCreated = 0;
-                if (createFollowUpTask) {
-                    const maxTasks = Math.min(idsToMove.length, 20);
-                    const due = new Date();
-                    due.setDate(due.getDate() + (followUpDueInDays || 2));
-
-                    const title = (followUpTitle || 'Follow-up após mudança de estágio').trim();
-                    const inserts = idsToMove.slice(0, maxTasks).map((id) => ({
-                        organization_id: organizationId,
-                        title,
-                        description: null,
-                        date: due.toISOString(),
-                        deal_id: id,
-                        type: followUpType,
-                        owner_id: userId,
-                        completed: false,
-                    }));
-
-                    const { error: actError } = await supabase.from('activities').insert(inserts);
-                    if (!actError) {
-                        followUpCreated = inserts.length;
+                    if (missingIds.length > 0 && !allowPartial) {
+                        return { error: `Alguns deals não foram encontrados neste board/organização (${missingIds.length}).` };
                     }
-                }
 
-                return {
-                    success: true,
-                    movedCount: idsToMove.length,
-                    skippedCount: missingIds.length,
-                    followUpCreated,
-                    deals: (deals || []).map((d: any) => ({ id: d.id, title: d.title })),
-                    message:
-                        `Movi ${idsToMove.length} deal(s) com sucesso.` +
-                        (missingIds.length ? ` (${missingIds.length} ignorado(s) por não pertencerem ao board/organização.)` : '') +
-                        (followUpCreated ? ` Criei ${followUpCreated} tarefa(s) de follow-up.` : ''),
-                };
+                    const stageRes = await resolveStageIdForBoard({ boardId: targetBoardId, stageId, stageName });
+                    if (!stageRes.ok) return { error: stageRes.error };
+
+                    const idsToMove = deals.map((d: any) => d.id);
+                    if (idsToMove.length === 0) {
+                        return { error: 'Nenhum deal válido encontrado para mover (cheque board/organização).' };
+                    }
+
+                    // 2) Atualiza em lote
+                    await prisma.deal.updateMany({
+                        where: {
+                            organizationId,
+                            boardId: targetBoardId,
+                            id: { in: idsToMove },
+                        },
+                        data: { stageId: stageRes.stageId },
+                    });
+
+                    // 3) "Automação simples": cria 1 tarefa por deal (com guardrail extra)
+                    let followUpCreated = 0;
+                    if (createFollowUpTask) {
+                        const maxTasks = Math.min(idsToMove.length, 20);
+                        const due = new Date();
+                        due.setDate(due.getDate() + (followUpDueInDays || 2));
+
+                        const taskTitle = (followUpTitle || 'Follow-up após mudança de estágio').trim();
+                        const inserts = idsToMove.slice(0, maxTasks).map((id: string) => ({
+                            organizationId,
+                            title: taskTitle,
+                            description: null as string | null,
+                            date: due,
+                            dealId: id,
+                            type: followUpType || 'TASK',
+                            ownerId: userId,
+                            completed: false,
+                        }));
+
+                        try {
+                            await prisma.activity.createMany({ data: inserts });
+                            followUpCreated = inserts.length;
+                        } catch {
+                            // ignore follow-up creation failure
+                        }
+                    }
+
+                    return {
+                        success: true,
+                        movedCount: idsToMove.length,
+                        skippedCount: missingIds.length,
+                        followUpCreated,
+                        deals: deals.map((d: any) => ({ id: d.id, title: d.title })),
+                        message:
+                            `Movi ${idsToMove.length} deal(s) com sucesso.` +
+                            (missingIds.length ? ` (${missingIds.length} ignorado(s) por não pertencerem ao board/organização.)` : '') +
+                            (followUpCreated ? ` Criei ${followUpCreated} tarefa(s) de follow-up.` : ''),
+                    };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -1223,53 +1275,56 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                     if (!guard.ok) return { error: guard.error };
                 }
 
-                let q = supabase
-                    .from('activities')
-                    .select('id, title, description, type, date, completed, deal_id, contact_id, deals(title, board_id), contact:contacts(name)')
-                    .eq('organization_id', organizationId)
-                    .is('deleted_at', null)
-                    .order('date', { ascending: true })
-                    .limit(limit);
+                try {
+                    const where: any = {
+                        organizationId,
+                        deletedAt: null,
+                    };
 
-                if (dealId) q = q.eq('deal_id', dealId);
-                if (contactId) q = q.eq('contact_id', contactId);
-                if (completed !== undefined) q = q.eq('completed', completed);
-                if (fromDate) q = q.gte('date', fromDate);
-                if (toDate) q = q.lte('date', toDate);
-                // PostgREST: filtro em tabela relacionada funciona melhor com join explícito.
-                if (targetBoardId) {
-                    q = supabase
-                        .from('activities')
-                        .select('id, title, description, type, date, completed, deal_id, contact_id, deals!inner(title, board_id), contact:contacts(name)')
-                        .eq('organization_id', organizationId)
-                        .is('deleted_at', null)
-                        .order('date', { ascending: true })
-                        .limit(limit)
-                        .eq('deals.board_id', targetBoardId);
+                    if (dealId) where.dealId = dealId;
+                    if (contactId) where.contactId = contactId;
+                    if (completed !== undefined) where.completed = completed;
+                    if (fromDate) where.date = { ...(where.date || {}), gte: new Date(fromDate) };
+                    if (toDate) where.date = { ...(where.date || {}), lte: new Date(toDate) };
 
-                    if (dealId) q = q.eq('deal_id', dealId);
-                    if (contactId) q = q.eq('contact_id', contactId);
-                    if (completed !== undefined) q = q.eq('completed', completed);
-                    if (fromDate) q = q.gte('date', fromDate);
-                    if (toDate) q = q.lte('date', toDate);
-                }
+                    // If board filter, use relation filter on deal
+                    if (targetBoardId) {
+                        where.deal = { boardId: targetBoardId };
+                    }
 
-                const { data, error } = await q;
-                if (error) return { error: formatSupabaseFailure(error) };
+                    const data = await prisma.activity.findMany({
+                        where,
+                        select: {
+                            id: true,
+                            title: true,
+                            description: true,
+                            type: true,
+                            date: true,
+                            completed: true,
+                            dealId: true,
+                            contactId: true,
+                            deal: { select: { title: true, boardId: true } },
+                            contact: { select: { name: true } },
+                        },
+                        orderBy: { date: 'asc' },
+                        take: limit,
+                    });
 
-                return {
-                    count: data?.length || 0,
-                    activities:
-                        (data || []).map((a: any) => ({
+                    return {
+                        count: data.length,
+                        activities: data.map((a: any) => ({
                             id: a.id,
                             title: a.title,
                             type: a.type,
                             date: a.date,
                             completed: !!a.completed,
-                            dealTitle: a.deals?.title || null,
+                            dealTitle: a.deal?.title || null,
                             contactName: a.contact?.name || null,
-                        })) || [],
-                };
+                        })),
+                    };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -1280,17 +1335,24 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
             }),
             needsApproval: !bypassApproval,
             execute: async ({ activityId }) => {
-                const { data, error } = await supabase
-                    .from('activities')
-                    .update({ completed: true })
-                    .eq('organization_id', organizationId)
-                    .eq('id', activityId)
-                    .select('id, title')
-                    .maybeSingle();
+                try {
+                    // First check the activity belongs to this org
+                    const existing = await prisma.activity.findFirst({
+                        where: { organizationId, id: activityId },
+                        select: { id: true },
+                    });
+                    if (!existing) return { error: 'Atividade não encontrada nesta organização.' };
 
-                if (error) return { error: formatSupabaseFailure(error) };
-                if (!data) return { error: 'Atividade não encontrada nesta organização.' };
-                return { success: true, message: `Atividade "${data.title}" marcada como concluída.` };
+                    const data = await prisma.activity.update({
+                        where: { id: activityId },
+                        data: { completed: true },
+                        select: { id: true, title: true },
+                    });
+
+                    return { success: true, message: `Atividade "${data.title}" marcada como concluída.` };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -1302,17 +1364,24 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
             }),
             needsApproval: !bypassApproval,
             execute: async ({ activityId, newDate }) => {
-                const { data, error } = await supabase
-                    .from('activities')
-                    .update({ date: newDate })
-                    .eq('organization_id', organizationId)
-                    .eq('id', activityId)
-                    .select('id, title, date')
-                    .maybeSingle();
+                try {
+                    // First check the activity belongs to this org
+                    const existing = await prisma.activity.findFirst({
+                        where: { organizationId, id: activityId },
+                        select: { id: true },
+                    });
+                    if (!existing) return { error: 'Atividade não encontrada nesta organização.' };
 
-                if (error) return { error: formatSupabaseFailure(error) };
-                if (!data) return { error: 'Atividade não encontrada nesta organização.' };
-                return { success: true, message: `Atividade "${data.title}" reagendada.`, date: data.date };
+                    const data = await prisma.activity.update({
+                        where: { id: activityId },
+                        data: { date: new Date(newDate) },
+                        select: { id: true, title: true, date: true },
+                    });
+
+                    return { success: true, message: `Atividade "${data.title}" reagendada.`, date: data.date };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -1328,26 +1397,26 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
             }),
             needsApproval: !bypassApproval,
             execute: async ({ title, description, dealId, contactId, type, date }) => {
-                const payload = {
-                    organization_id: organizationId,
-                    title,
-                    description: description || null,
-                    type,
-                    date: date || new Date().toISOString(),
-                    deal_id: dealId || context.dealId || null,
-                    contact_id: contactId || null,
-                    owner_id: userId,
-                    completed: true,
-                };
+                try {
+                    const data = await prisma.activity.create({
+                        data: {
+                            organizationId,
+                            title,
+                            description: description || null,
+                            type: type || 'CALL',
+                            date: new Date(date || new Date().toISOString()),
+                            dealId: dealId || context.dealId || null,
+                            contactId: contactId || null,
+                            ownerId: userId,
+                            completed: true,
+                        },
+                        select: { id: true, title: true, type: true, date: true },
+                    });
 
-                const { data, error } = await supabase
-                    .from('activities')
-                    .insert(payload)
-                    .select('id, title, type, date')
-                    .single();
-
-                if (error) return { error: formatSupabaseFailure(error) };
-                return { success: true, activity: data, message: `Registro criado: "${data.title}".` };
+                    return { success: true, activity: data, message: `Registro criado: "${data.title}".` };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -1366,14 +1435,16 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 const guard = await ensureDealBelongsToOrganization(targetDealId);
                 if (!guard.ok) return { error: guard.error };
 
-                const { data, error } = await supabase
-                    .from('deal_notes')
-                    .insert({ deal_id: targetDealId, content, created_by: userId })
-                    .select('id, content, created_at')
-                    .single();
+                try {
+                    const data = await prisma.dealNote.create({
+                        data: { dealId: targetDealId, content, createdBy: userId },
+                        select: { id: true, content: true, createdAt: true },
+                    });
 
-                if (error) return { error: formatSupabaseFailure(error) };
-                return { success: true, note: data, message: `Nota adicionada no deal "${guard.deal.title}".` };
+                    return { success: true, note: data, message: `Nota adicionada no deal "${guard.deal.title}".` };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -1390,19 +1461,22 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 const guard = await ensureDealBelongsToOrganization(targetDealId);
                 if (!guard.ok) return { error: guard.error };
 
-                const { data, error } = await supabase
-                    .from('deal_notes')
-                    .select('id, content, created_at, created_by')
-                    .eq('deal_id', targetDealId)
-                    .order('created_at', { ascending: false })
-                    .limit(limit);
+                try {
+                    const data = await prisma.dealNote.findMany({
+                        where: { dealId: targetDealId },
+                        select: { id: true, content: true, createdAt: true, createdBy: true },
+                        orderBy: { createdAt: 'desc' },
+                        take: limit,
+                    });
 
-                if (error) return { error: formatSupabaseFailure(error) };
-                return {
-                    count: data?.length || 0,
-                    dealTitle: guard.deal.title,
-                    notes: (data || []).map((n: any) => ({ id: n.id, content: n.content, createdAt: n.created_at, createdBy: n.created_by })),
-                };
+                    return {
+                        count: data.length,
+                        dealTitle: guard.deal.title,
+                        notes: data.map((n: any) => ({ id: n.id, content: n.content, createdAt: n.createdAt, createdBy: n.createdBy })),
+                    };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -1422,26 +1496,27 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
             }),
             needsApproval: !bypassApproval,
             execute: async ({ name, email, phone, role, companyName, notes, status, stage, source }) => {
-                const { data, error } = await supabase
-                    .from('contacts')
-                    .insert({
-                        organization_id: organizationId,
-                        name,
-                        email: email || null,
-                        phone: phone || null,
-                        role: role || null,
-                        company_name: companyName || null,
-                        notes: notes || null,
-                        status,
-                        stage,
-                        source: source || null,
-                        owner_id: userId,
-                        updated_at: new Date().toISOString(),
-                    })
-                    .select('id, name, email, phone, company_name')
-                    .single();
-                if (error) return { error: formatSupabaseFailure(error) };
-                return { success: true, contact: data, message: `Contato "${data.name}" criado.` };
+                try {
+                    const data = await prisma.contact.create({
+                        data: {
+                            organizationId,
+                            name,
+                            email: email || null,
+                            phone: phone || null,
+                            role: role || null,
+                            companyName: companyName || null,
+                            notes: notes || null,
+                            status: status || 'ACTIVE',
+                            stage: stage || 'LEAD',
+                            source: source || null,
+                            ownerId: userId,
+                        },
+                        select: { id: true, name: true, email: true, phone: true, companyName: true },
+                    });
+                    return { success: true, contact: data, message: `Contato "${data.name}" criado.` };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -1461,27 +1536,34 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
             }),
             needsApproval: !bypassApproval,
             execute: async ({ contactId, ...patch }) => {
-                const updateData: Record<string, unknown> = { updated_at: new Date().toISOString() };
+                const updateData: Record<string, unknown> = {};
                 if (patch.name !== undefined) updateData.name = patch.name;
                 if (patch.email !== undefined) updateData.email = patch.email;
                 if (patch.phone !== undefined) updateData.phone = patch.phone;
                 if (patch.role !== undefined) updateData.role = patch.role;
-                if (patch.companyName !== undefined) updateData.company_name = patch.companyName;
+                if (patch.companyName !== undefined) updateData.companyName = patch.companyName;
                 if (patch.notes !== undefined) updateData.notes = patch.notes;
                 if (patch.status !== undefined) updateData.status = patch.status;
                 if (patch.stage !== undefined) updateData.stage = patch.stage;
                 if (patch.source !== undefined) updateData.source = patch.source;
 
-                const { data, error } = await supabase
-                    .from('contacts')
-                    .update(updateData)
-                    .eq('organization_id', organizationId)
-                    .eq('id', contactId)
-                    .select('id, name, email, phone, company_name')
-                    .maybeSingle();
-                if (error) return { error: formatSupabaseFailure(error) };
-                if (!data) return { error: 'Contato não encontrado nesta organização.' };
-                return { success: true, contact: data, message: `Contato "${data.name}" atualizado.` };
+                try {
+                    // First check the contact belongs to this org
+                    const existing = await prisma.contact.findFirst({
+                        where: { organizationId, id: contactId },
+                        select: { id: true },
+                    });
+                    if (!existing) return { error: 'Contato não encontrado nesta organização.' };
+
+                    const data = await prisma.contact.update({
+                        where: { id: contactId },
+                        data: updateData,
+                        select: { id: true, name: true, email: true, phone: true, companyName: true },
+                    });
+                    return { success: true, contact: data, message: `Contato "${data.name}" atualizado.` };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -1491,15 +1573,29 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 contactId: z.string(),
             }),
             execute: async ({ contactId }) => {
-                const { data, error } = await supabase
-                    .from('contacts')
-                    .select('id, name, email, phone, role, company_name, notes, status, stage, source, created_at, updated_at')
-                    .eq('organization_id', organizationId)
-                    .eq('id', contactId)
-                    .maybeSingle();
-                if (error) return { error: formatSupabaseFailure(error) };
-                if (!data) return { error: 'Contato não encontrado nesta organização.' };
-                return data;
+                try {
+                    const data = await prisma.contact.findFirst({
+                        where: { organizationId, id: contactId },
+                        select: {
+                            id: true,
+                            name: true,
+                            email: true,
+                            phone: true,
+                            role: true,
+                            companyName: true,
+                            notes: true,
+                            status: true,
+                            stage: true,
+                            source: true,
+                            createdAt: true,
+                            updatedAt: true,
+                        },
+                    });
+                    if (!data) return { error: 'Contato não encontrado nesta organização.' };
+                    return data;
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -1517,23 +1613,22 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 const dealGuard = await ensureDealBelongsToOrganization(targetDealId);
                 if (!dealGuard.ok) return { error: dealGuard.error };
 
-                const { data: contact, error: contactError } = await supabase
-                    .from('contacts')
-                    .select('id, name')
-                    .eq('organization_id', organizationId)
-                    .eq('id', contactId)
-                    .maybeSingle();
-                if (contactError) return { error: formatSupabaseFailure(contactError) };
-                if (!contact) return { error: 'Contato não encontrado nesta organização.' };
+                try {
+                    const contact = await prisma.contact.findFirst({
+                        where: { organizationId, id: contactId },
+                        select: { id: true, name: true },
+                    });
+                    if (!contact) return { error: 'Contato não encontrado nesta organização.' };
 
-                const { error } = await supabase
-                    .from('deals')
-                    .update({ contact_id: contactId, updated_at: new Date().toISOString() })
-                    .eq('organization_id', organizationId)
-                    .eq('id', targetDealId);
-                if (error) return { error: formatSupabaseFailure(error) };
+                    await prisma.deal.updateMany({
+                        where: { organizationId, id: targetDealId },
+                        data: { contactId },
+                    });
 
-                return { success: true, message: `Deal "${dealGuard.deal.title}" associado ao contato "${contact.name}".` };
+                    return { success: true, message: `Deal "${dealGuard.deal.title}" associado ao contato "${contact.name}".` };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -1549,15 +1644,17 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 const guard = await ensureBoardBelongsToOrganization(targetBoardId);
                 if (!guard.ok) return { error: guard.error };
 
-                const { data, error } = await supabase
-                    .from('board_stages')
-                    .select('id, name, label, color, order, is_default')
-                    .eq('organization_id', organizationId)
-                    .eq('board_id', targetBoardId)
-                    .order('order', { ascending: true });
+                try {
+                    const data = await prisma.boardStage.findMany({
+                        where: { organizationId, boardId: targetBoardId },
+                        select: { id: true, name: true, label: true, color: true, order: true, isDefault: true },
+                        orderBy: { order: 'asc' },
+                    });
 
-                if (error) return { error: formatSupabaseFailure(error) };
-                return { count: data?.length || 0, stages: data || [] };
+                    return { count: data.length, stages: data };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -1578,19 +1675,26 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 if (label !== undefined) updateData.label = label;
                 if (color !== undefined) updateData.color = color;
                 if (order !== undefined) updateData.order = order;
-                if (isDefault !== undefined) updateData.is_default = isDefault;
+                if (isDefault !== undefined) updateData.isDefault = isDefault;
 
-                const { data, error } = await supabase
-                    .from('board_stages')
-                    .update(updateData)
-                    .eq('organization_id', organizationId)
-                    .eq('id', stageId)
-                    .select('id, name, label, color, order, is_default')
-                    .maybeSingle();
+                try {
+                    // First check the stage belongs to this org
+                    const existing = await prisma.boardStage.findFirst({
+                        where: { organizationId, id: stageId },
+                        select: { id: true },
+                    });
+                    if (!existing) return { error: 'Estágio não encontrado nesta organização.' };
 
-                if (error) return { error: formatSupabaseFailure(error) };
-                if (!data) return { error: 'Estágio não encontrado nesta organização.' };
-                return { success: true, stage: data, message: `Estágio atualizado: ${data.name}` };
+                    const data = await prisma.boardStage.update({
+                        where: { id: stageId },
+                        data: updateData,
+                        select: { id: true, name: true, label: true, color: true, order: true, isDefault: true },
+                    });
+
+                    return { success: true, stage: data, message: `Estágio atualizado: ${data.name}` };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
+                }
             },
         }),
 
@@ -1607,32 +1711,34 @@ export function createCRMTools(context: CRMCallOptions, userId: string) {
                 const guard = await ensureBoardBelongsToOrganization(targetBoardId);
                 if (!guard.ok) return { error: guard.error };
 
-                // valida que os IDs pertencem ao board+org
-                const { data: stages, error: stError } = await supabase
-                    .from('board_stages')
-                    .select('id')
-                    .eq('organization_id', organizationId)
-                    .eq('board_id', targetBoardId)
-                    .in('id', orderedStageIds);
+                try {
+                    // valida que os IDs pertencem ao board+org
+                    const stages = await prisma.boardStage.findMany({
+                        where: {
+                            organizationId,
+                            boardId: targetBoardId,
+                            id: { in: orderedStageIds },
+                        },
+                        select: { id: true },
+                    });
 
-                if (stError) return { error: formatSupabaseFailure(stError) };
-                const found = new Set((stages || []).map((s: any) => s.id));
-                const missing = orderedStageIds.filter((id) => !found.has(id));
-                if (missing.length) return { error: 'Alguns estágios não pertencem a este board/organização.' };
+                    const found = new Set(stages.map((s: any) => s.id));
+                    const missing = orderedStageIds.filter((id) => !found.has(id));
+                    if (missing.length) return { error: 'Alguns estágios não pertencem a este board/organização.' };
 
-                // atualiza em série (n pequeno). Se crescer, migrar para RPC.
-                for (let i = 0; i < orderedStageIds.length; i++) {
-                    const id = orderedStageIds[i];
-                    const { error } = await supabase
-                        .from('board_stages')
-                        .update({ order: i })
-                        .eq('organization_id', organizationId)
-                        .eq('board_id', targetBoardId)
-                        .eq('id', id);
-                    if (error) return { error: formatSupabaseFailure(error) };
+                    // atualiza em série (n pequeno). Se crescer, migrar para RPC.
+                    for (let i = 0; i < orderedStageIds.length; i++) {
+                        const id = orderedStageIds[i];
+                        await prisma.boardStage.updateMany({
+                            where: { organizationId, boardId: targetBoardId, id },
+                            data: { order: i },
+                        });
+                    }
+
+                    return { success: true, message: `Reordenei ${orderedStageIds.length} estágio(s).` };
+                } catch (err) {
+                    return { error: formatPrismaError(err) };
                 }
-
-                return { success: true, message: `Reordenei ${orderedStageIds.length} estágio(s).` };
             },
         }),
     } as Record<string, any>;

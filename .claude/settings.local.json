@@ -26,7 +26,21 @@
       "Bash(npm uninstall:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(kill 94348)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000/login)",
+      "Bash(curl -s http://localhost:3000/api/installer/check-initialized)",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s -X POST http://localhost:3000/api/setup -H \"Content-Type: application/json\" -d '{\"organizationName\":\"AutoCRM Test\",\"adminName\":\"Danilo\",\"adminEmail\":\"admin@test.com\",\"adminPassword\":\"Admin123!\"}')",
+      "Bash(curl -s http://localhost:3000/api/auth/csrf -c /tmp/cookies.txt)",
+      "Bash(curl -s -b /tmp/cookies.txt http://localhost:3000/api/auth/session)",
+      "Bash(curl -s -b /tmp/cookies.txt http://localhost:3000/api/settings/api-keys -H \"Accept: application/json\")",
+      "Bash(curl -s -H 'X-Api-Key: ncrm_myLA97Zpn6apUiP_p3Xl2gUKuOJ9kIdf' http://localhost:3000/api/public/v1/boards)",
+      "Bash(timeout 3 curl -s \"http://localhost:3000/api/realtime/stream?tables=deals\")",
+      "Bash(curl -s -b /tmp/cookies.txt http://localhost:3000/api/admin/users)",
+      "Bash(curl -s -b /tmp/cookies.txt http://localhost:3000/api/settings/ai)",
+      "Bash(curl -s -b /tmp/cookies.txt http://localhost:3000/api/settings/audit-logs)",
+      "Bash(perl -e 'alarm 3; exec @ARGV' curl -s -N \"http://localhost:3000/api/realtime/stream?tables=deals\")"
     ]
   }
 }

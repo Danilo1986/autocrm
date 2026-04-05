@@ -1,39 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const profileQueryBuilder = {
-  select: vi.fn().mockReturnThis(),
-  eq: vi.fn().mockReturnThis(),
-  single: vi.fn(async () => ({
-    data: { first_name: 'Maria', nickname: null },
-    error: null,
-  })),
-}
+const mocks = vi.hoisted(() => {
+  return {
+    prisma: {
+      profile: {
+        findFirst: vi.fn(async () => ({
+          firstName: 'Maria',
+          nickname: null,
+        })),
+      },
+      deal: {
+        update: vi.fn(async () => ({ title: 'Negocio X' })),
+        updateMany: vi.fn(async () => ({ count: 1 })),
+        findFirst: vi.fn(async () => ({ title: 'Negocio X' })),
+      },
+    },
+  }
+})
 
-const dealsQueryBuilder = {
-  update: vi.fn().mockReturnThis(),
-  eq: vi.fn().mockReturnThis(),
-  select: vi.fn().mockReturnThis(),
-  single: vi.fn(async () => ({
-    data: { title: 'Negócio X' },
-    error: null,
-  })),
-}
-
-// Mock do client service-role usado pelo agente de IA.
-const supabaseMock = {
-  from: vi.fn((table: string) => {
-    if (table === 'profiles') return profileQueryBuilder
-    if (table === 'deals') return dealsQueryBuilder
-    throw new Error(`Unexpected table: ${table}`)
-  }),
-}
-
-vi.mock('@/lib/supabase/staticAdminClient', () => ({
-  createStaticAdminClient: () => supabaseMock,
-}))
-
-vi.mock('@/lib/supabase/prismaAdapter', () => ({
-  createSupabasePrismaAdapter: () => supabaseMock,
+vi.mock('@/lib/db/prisma', () => ({
+  prisma: mocks.prisma,
 }))
 
 import { createCRMTools } from '@/lib/ai/tools'
@@ -43,7 +29,7 @@ beforeEach(() => {
 })
 
 describe('AI Tools permissions', () => {
-  it('permite assignDeal para vendedor (regra: vendedor só não mexe em usuários/configs)', async () => {
+  it('permite assignDeal para vendedor', async () => {
     const tools = createCRMTools(
       {
         organizationId: '11111111-1111-1111-1111-111111111111',
@@ -60,9 +46,8 @@ describe('AI Tools permissions', () => {
       success: true,
     })
 
-    expect(supabaseMock.from).toHaveBeenCalledWith('profiles')
-    expect(supabaseMock.from).toHaveBeenCalledWith('deals')
-    expect(dealsQueryBuilder.update).toHaveBeenCalledTimes(1)
+    expect(mocks.prisma.profile.findFirst).toHaveBeenCalledTimes(1)
+    expect(mocks.prisma.deal.update).toHaveBeenCalledTimes(1)
     expect(String((res as any).message)).toContain('Maria')
   })
 })
