@@ -42,7 +42,8 @@
       "Bash(curl -s -b /tmp/cookies.txt http://localhost:3000/api/settings/audit-logs)",
       "Bash(perl -e 'alarm 3; exec @ARGV' curl -s -N \"http://localhost:3000/api/realtime/stream?tables=deals\")",
       "Bash(xargs sed:*)",
-      "Bash(ls lib/supabase*)"
+      "Bash(ls lib/supabase*)",
+      "Bash(npx vitest:*)"
     ]
   }
 }

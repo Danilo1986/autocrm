@@ -121,7 +121,7 @@ export const NotificationPopover = () => {
                             </div>
                         ) : (
                             <ul className="divide-y divide-slate-100 dark:divide-white/5">
-                                {notifications.map((notification) => (
+                                {notifications.map((notification: SystemNotification) => (
                                     <li key={notification.id} className={notification.readAt ? 'opacity-60 bg-slate-50/30 dark:bg-white/5' : ''}>
                                         <Link
                                             href={notification.actionLink || '#'}

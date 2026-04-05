@@ -138,7 +138,7 @@ export const ContactsStageTabs: React.FC<ContactsStageTabs> = ({
  * @returns {Element} Retorna um valor do tipo `Element`.
  */
 export const StageBadge: React.FC<{ stage: ContactStage | string }> = ({ stage }) => {
-  const config = STAGE_CONFIG[stage];
+  const config = STAGE_CONFIG[stage as keyof typeof STAGE_CONFIG];
 
   if (!config) {
     return (
