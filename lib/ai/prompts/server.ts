@@ -1,5 +1,6 @@
 import 'server-only';
 
+import { prisma } from '@/lib/db/prisma';
 import { getPromptCatalogMap } from './catalog';
 
 export type PromptResolution = {
@@ -10,48 +11,39 @@ export type PromptResolution = {
   updatedAt?: string;
 };
 
-type DbPromptRow = {
-  key: string;
-  content: string;
-  version: number;
-  is_active: boolean;
-  updated_at: string;
-};
-
 /**
  * Resolves a prompt template, checking for organization-level overrides first.
- * Now accepts a generic supabase-like shim (from server.ts) instead of SupabaseClient.
+ * The first parameter (_supabase) is kept for backward compatibility but ignored.
  */
 export async function getResolvedPrompt(
-  supabase: any,
+  _supabase: any,
   organizationId: string,
   key: string
 ): Promise<PromptResolution | null> {
   const catalog = getPromptCatalogMap();
   const fallback = catalog[key];
 
-  const { data, error } = await supabase
-    .from('ai_prompt_templates')
-    .select('key, content, version, is_active, updated_at')
-    .eq('organization_id', organizationId)
-    .eq('key', key)
-    .eq('is_active', true)
-    .maybeSingle();
+  try {
+    const row = await prisma.aiPromptTemplate.findFirst({
+      where: {
+        organizationId,
+        key,
+        isActive: true,
+      },
+      select: { key: true, content: true, version: true, isActive: true, updatedAt: true },
+    });
 
-  if (error) {
-    // Nao quebrar IA por falha em prompt override; apenas log e fallback.
-    console.warn('[ai/prompts] Failed to load override; using default.', { key, message: error.message });
-  }
-
-  const row = (data as DbPromptRow | null) ?? null;
-  if (row?.content) {
-    return {
-      key,
-      content: row.content,
-      source: 'override',
-      version: row.version,
-      updatedAt: row.updated_at,
-    };
+    if (row?.content) {
+      return {
+        key,
+        content: row.content,
+        source: 'override',
+        version: row.version,
+        updatedAt: row.updatedAt?.toISOString(),
+      };
+    }
+  } catch (error: any) {
+    console.warn('[ai/prompts] Failed to load override; using default.', { key, message: error?.message });
   }
 
   if (!fallback) return null;

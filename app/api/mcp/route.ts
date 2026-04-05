@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { authPublicApi } from '@/lib/public-api/auth';
-import { createStaticAdminClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
 import { buildCrmMcpRegistry } from '@/lib/mcp/crmRegistry';
 import { zodToJsonSchema2020 } from '@/lib/mcp/zodToJsonSchema';
 
@@ -25,8 +25,8 @@ function getApiKeyFromHeaders(request: Request) {
   const headerKey = request.headers.get('x-api-key');
   if (headerKey?.trim()) return headerKey.trim();
 
-  const auth = request.headers.get('authorization') || '';
-  const m = auth.match(/^Bearer\s+(.+)$/i);
+  const authHeader = request.headers.get('authorization') || '';
+  const m = authHeader.match(/^Bearer\s+(.+)$/i);
   if (m?.[1]?.trim()) return m[1].trim();
 
   return '';
@@ -36,7 +36,6 @@ async function authMcp(request: Request) {
   const apiKey = getApiKeyFromHeaders(request);
   if (!apiKey) return { ok: false as const, status: 401, body: { error: 'Missing API key', code: 'AUTH_MISSING' } };
 
-  // `authPublicApi` expects X-Api-Key. Most MCP clients use Authorization: Bearer, so we normalize here.
   const headers = new Headers(request.headers);
   headers.set('x-api-key', apiKey);
   const normalized = new Request(request.url, { method: request.method, headers });
@@ -48,7 +47,6 @@ function toToolResult(payload: unknown, opts?: { isError?: boolean }) {
   const isError = !!opts?.isError || (payload && typeof payload === 'object' && !Array.isArray(payload) && 'error' in (payload as any));
   const text = JSON.stringify(payload, null, 2);
 
-  // MCP guidance: when returning structuredContent, also include serialized JSON in a text block.
   const structuredContent =
     payload && typeof payload === 'object' && !Array.isArray(payload) ? (payload as Record<string, unknown>) : undefined;
 
@@ -60,16 +58,14 @@ function toToolResult(payload: unknown, opts?: { isError?: boolean }) {
 }
 
 async function resolveApiKeyOwnerUserId(opts: { apiKeyId: string; organizationId: string }) {
-  const sb = createStaticAdminClient();
-  const { data, error } = await sb
-    .from('api_keys')
-    .select('id, organization_id, created_by')
-    .eq('id', opts.apiKeyId)
-    .maybeSingle();
+  const apiKey = await prisma.apiKey.findUnique({
+    where: { id: opts.apiKeyId },
+    select: { id: true, organizationId: true, createdBy: true },
+  });
 
-  if (error || !data) return null;
-  if (data.organization_id !== opts.organizationId) return null;
-  return data.created_by as string | null;
+  if (!apiKey) return null;
+  if (apiKey.organizationId !== opts.organizationId) return null;
+  return apiKey.createdBy as string | null;
 }
 
 export async function GET() {
@@ -83,10 +79,9 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const auth = await authMcp(request);
-  if (!auth.ok) {
-    // JSON-RPC friendly error envelope (MCP clients will still see 401 if they surface it)
-    return NextResponse.json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: auth.body.error, data: auth.body } }, { status: auth.status });
+  const authResult = await authMcp(request);
+  if (!authResult.ok) {
+    return NextResponse.json({ jsonrpc: '2.0', id: null, error: { code: -32001, message: authResult.body.error, data: authResult.body } }, { status: authResult.status });
   }
 
   const body = (await request.json().catch(() => null)) as JsonRpcRequest | null;
@@ -94,7 +89,7 @@ export async function POST(request: Request) {
     return NextResponse.json(jsonRpcError(null, -32600, 'Invalid Request'), { status: 400 });
   }
 
-  const userId = await resolveApiKeyOwnerUserId({ apiKeyId: auth.apiKeyId, organizationId: auth.organizationId });
+  const userId = await resolveApiKeyOwnerUserId({ apiKeyId: authResult.apiKeyId, organizationId: authResult.organizationId });
   if (!userId) {
     return NextResponse.json(
       { jsonrpc: '2.0', id: body.id ?? null, error: { code: -32001, message: 'Invalid API key owner', data: { code: 'AUTH_OWNER_INVALID' } } },
@@ -102,13 +97,11 @@ export async function POST(request: Request) {
     );
   }
 
-  // Minimal context for MCP execution. Tool args can still include boardId/dealId/etc.
   const registry = buildCrmMcpRegistry({
-    context: { organizationId: auth.organizationId },
+    context: { organizationId: authResult.organizationId },
     userId,
   });
 
-  // MCP core methods
   if (body.method === 'initialize') {
     return NextResponse.json(
       jsonRpcResult(body.id, {
@@ -120,7 +113,6 @@ export async function POST(request: Request) {
   }
 
   if (body.method === 'notifications/initialized') {
-    // Notification: no response required by JSON-RPC, but returning 204 keeps proxies happy.
     return new NextResponse(null, { status: 204 });
   }
 
@@ -147,7 +139,6 @@ export async function POST(request: Request) {
       return NextResponse.json(jsonRpcError(body.id, -32602, `Unknown tool: ${toolName}`), { status: 400 });
     }
 
-    // Validate inputs using the underlying Zod schema when available.
     const schema: any = (tool as any).inputSchema;
     if (schema && typeof schema.safeParse === 'function') {
       const parsed = schema.safeParse(args);
@@ -164,7 +155,6 @@ export async function POST(request: Request) {
       }
     }
 
-    // No schema: best-effort execute.
     try {
       const out = await (tool as any).execute(args);
       return NextResponse.json(jsonRpcResult(body.id, toToolResult(out)));
@@ -175,4 +165,3 @@ export async function POST(request: Request) {
 
   return NextResponse.json(jsonRpcError(body.id, -32601, `Method not found: ${body.method}`), { status: 404 });
 }
-

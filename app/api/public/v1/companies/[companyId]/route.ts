@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { authPublicApi } from '@/lib/public-api/auth';
-import { createStaticAdminClient } from '@/lib/supabase/server';
-import { isValidUUID } from '@/lib/supabase/utils';
+import { prisma } from '@/lib/db/prisma';
+import { isValidUUID } from '@/lib/utils/uuid';
 import { normalizeText, normalizeUrl } from '@/lib/public-api/sanitize';
 
 export const runtime = 'nodejs';
@@ -13,6 +13,17 @@ const CompanyPatchSchema = z.object({
   industry: z.string().nullable().optional(),
 }).strict();
 
+function toSnakeCase(c: any) {
+  return {
+    id: c.id,
+    name: c.name,
+    website: c.website ?? null,
+    industry: c.industry ?? null,
+    created_at: c.createdAt,
+    updated_at: c.updatedAt,
+  };
+}
+
 export async function GET(request: Request, ctx: { params: Promise<{ companyId: string }> }) {
   const auth = await authPublicApi(request);
   if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
@@ -22,19 +33,21 @@ export async function GET(request: Request, ctx: { params: Promise<{ companyId: 
     return NextResponse.json({ error: 'Invalid company id', code: 'VALIDATION_ERROR' }, { status: 422 });
   }
 
-  const sb = createStaticAdminClient();
-  const { data, error } = await sb
-    .from('crm_companies')
-    .select('id,name,website,industry,created_at,updated_at')
-    .eq('organization_id', auth.organizationId)
-    .is('deleted_at', null)
-    .eq('id', companyId)
-    .maybeSingle();
+  try {
+    const data = await prisma.crmCompany.findFirst({
+      where: {
+        organizationId: auth.organizationId,
+        id: companyId,
+      },
+      select: { id: true, name: true, website: true, industry: true, createdAt: true, updatedAt: true },
+    });
 
-  if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
-  if (!data) return NextResponse.json({ error: 'Company not found', code: 'NOT_FOUND' }, { status: 404 });
+    if (!data) return NextResponse.json({ error: 'Company not found', code: 'NOT_FOUND' }, { status: 404 });
 
-  return NextResponse.json({ data });
+    return NextResponse.json({ data: toSnakeCase(data) });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
+  }
 }
 
 export async function PATCH(request: Request, ctx: { params: Promise<{ companyId: string }> }) {
@@ -56,20 +69,23 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ companyId
   if (parsed.data.name !== undefined) updates.name = normalizeText(parsed.data.name);
   if (parsed.data.website !== undefined) updates.website = parsed.data.website === null ? null : normalizeUrl(parsed.data.website);
   if (parsed.data.industry !== undefined) updates.industry = parsed.data.industry === null ? null : normalizeText(parsed.data.industry);
-  updates.updated_at = new Date().toISOString();
 
-  const sb = createStaticAdminClient();
-  const { data, error } = await sb
-    .from('crm_companies')
-    .update(updates)
-    .eq('organization_id', auth.organizationId)
-    .eq('id', companyId)
-    .select('id,name,website,industry,created_at,updated_at')
-    .maybeSingle();
+  try {
+    // Check existence first since we need org-scoped update
+    const existing = await prisma.crmCompany.findFirst({
+      where: { organizationId: auth.organizationId, id: companyId },
+      select: { id: true },
+    });
+    if (!existing) return NextResponse.json({ error: 'Company not found', code: 'NOT_FOUND' }, { status: 404 });
 
-  if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
-  if (!data) return NextResponse.json({ error: 'Company not found', code: 'NOT_FOUND' }, { status: 404 });
+    const data = await prisma.crmCompany.update({
+      where: { id: companyId },
+      data: updates,
+      select: { id: true, name: true, website: true, industry: true, createdAt: true, updatedAt: true },
+    });
 
-  return NextResponse.json({ data });
+    return NextResponse.json({ data: toSnakeCase(data) });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
+  }
 }
-

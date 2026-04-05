@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { authPublicApi } from '@/lib/public-api/auth';
-import { createStaticAdminClient } from '@/lib/supabase/server';
-import { isValidUUID } from '@/lib/supabase/utils';
+import { prisma } from '@/lib/db/prisma';
+import { isValidUUID } from '@/lib/utils/uuid';
 
 export const runtime = 'nodejs';
 
@@ -13,35 +13,41 @@ export async function GET(request: Request, ctx: { params: Promise<{ boardKeyOrI
   const value = String(boardKeyOrId || '').trim();
   if (!value) return NextResponse.json({ error: 'Missing board identifier', code: 'BAD_REQUEST' }, { status: 400 });
 
-  const sb = createStaticAdminClient();
+  try {
+    const boardWhere: any = {
+      organizationId: auth.organizationId,
+    };
+    if (isValidUUID(value)) {
+      boardWhere.id = value;
+    } else {
+      boardWhere.key = value;
+    }
 
-  const { data: board, error: boardError } = await sb
-    .from('boards')
-    .select('id')
-    .eq('organization_id', auth.organizationId)
-    .is('deleted_at', null)
-    .match(isValidUUID(value) ? { id: value } : { key: value })
-    .maybeSingle();
+    const board = await prisma.board.findFirst({
+      where: boardWhere,
+      select: { id: true },
+    });
 
-  if (boardError) return NextResponse.json({ error: boardError.message, code: 'DB_ERROR' }, { status: 500 });
-  if (!board?.id) return NextResponse.json({ error: 'Board not found', code: 'NOT_FOUND' }, { status: 404 });
+    if (!board?.id) return NextResponse.json({ error: 'Board not found', code: 'NOT_FOUND' }, { status: 404 });
 
-  const { data, error } = await sb
-    .from('board_stages')
-    .select('id,label,name,color,order')
-    .eq('organization_id', auth.organizationId)
-    .eq('board_id', board.id)
-    .order('order', { ascending: true });
+    const data = await prisma.boardStage.findMany({
+      where: {
+        organizationId: auth.organizationId,
+        boardId: board.id,
+      },
+      select: { id: true, label: true, name: true, color: true, order: true },
+      orderBy: { order: 'asc' },
+    });
 
-  if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
-
-  return NextResponse.json({
-    data: (data || []).map((s: any) => ({
-      id: s.id,
-      label: s.label || s.name,
-      color: s.color ?? null,
-      order: s.order ?? 0,
-    })),
-  });
+    return NextResponse.json({
+      data: data.map((s) => ({
+        id: s.id,
+        label: s.label || s.name,
+        color: s.color ?? null,
+        order: s.order ?? 0,
+      })),
+    });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
+  }
 }
-

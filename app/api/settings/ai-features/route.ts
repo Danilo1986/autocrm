@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
+import { auth } from '@/lib/auth/auth';
 import { isAllowedOrigin } from '@/lib/security/sameOrigin';
 
 function json<T>(body: T, status = 200): Response {
@@ -9,35 +10,24 @@ function json<T>(body: T, status = 200): Response {
   });
 }
 
-/**
- * Handler HTTP `GET` deste endpoint (Next.js Route Handler).
- * @returns {Promise<Response>} Retorna um valor do tipo `Promise<Response>`.
- */
 export async function GET() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const session = await auth();
+  if (!session?.user?.id) return json({ error: 'Unauthorized' }, 401);
 
-  if (!user) return json({ error: 'Unauthorized' }, 401);
+  const me = await prisma.profile.findUnique({
+    where: { id: session.user.id },
+    select: { id: true, role: true, organizationId: true },
+  });
 
-  const { data: me, error: meError } = await supabase
-    .from('profiles')
-    .select('id, role, organization_id')
-    .eq('id', user.id)
-    .single();
+  if (!me?.organizationId) return json({ error: 'Profile not found' }, 404);
 
-  if (meError || !me?.organization_id) return json({ error: 'Profile not found' }, 404);
-
-  const { data, error } = await supabase
-    .from('ai_feature_flags')
-    .select('key, enabled, updated_at')
-    .eq('organization_id', me.organization_id);
-
-  if (error) return json({ error: error.message }, 500);
+  const data = await prisma.aiFeatureFlag.findMany({
+    where: { organizationId: me.organizationId },
+    select: { key: true, enabled: true, updatedAt: true },
+  });
 
   const flags: Record<string, boolean> = {};
-  for (const row of data || []) flags[row.key] = Boolean(row.enabled);
+  for (const row of data) flags[row.key] = Boolean(row.enabled);
 
   return json({
     isAdmin: me.role === 'admin',
@@ -52,29 +42,18 @@ const UpdateFeatureSchema = z
   })
   .strict();
 
-/**
- * Handler HTTP `POST` deste endpoint (Next.js Route Handler).
- *
- * @param {Request} req - Objeto da requisição.
- * @returns {Promise<Response>} Retorna um valor do tipo `Promise<Response>`.
- */
 export async function POST(req: Request) {
   if (!isAllowedOrigin(req)) return json({ error: 'Forbidden' }, 403);
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const session = await auth();
+  if (!session?.user?.id) return json({ error: 'Unauthorized' }, 401);
 
-  if (!user) return json({ error: 'Unauthorized' }, 401);
+  const me = await prisma.profile.findUnique({
+    where: { id: session.user.id },
+    select: { id: true, role: true, organizationId: true },
+  });
 
-  const { data: me, error: meError } = await supabase
-    .from('profiles')
-    .select('id, role, organization_id')
-    .eq('id', user.id)
-    .single();
-
-  if (meError || !me?.organization_id) return json({ error: 'Profile not found' }, 404);
+  if (!me?.organizationId) return json({ error: 'Profile not found' }, 404);
   if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
 
   const rawBody = await req.json().catch(() => null);
@@ -83,20 +62,24 @@ export async function POST(req: Request) {
 
   const { key, enabled } = parsed.data;
 
-  const now = new Date().toISOString();
-  const { error } = await supabase
-    .from('ai_feature_flags')
-    .upsert(
-      {
-        organization_id: me.organization_id,
+  try {
+    await prisma.aiFeatureFlag.upsert({
+      where: {
+        organizationId_key: {
+          organizationId: me.organizationId,
+          key,
+        },
+      },
+      create: {
+        organizationId: me.organizationId,
         key,
         enabled,
-        updated_at: now,
       },
-      { onConflict: 'organization_id,key' }
-    );
+      update: { enabled },
+    });
+  } catch (err: any) {
+    return json({ error: err.message }, 500);
+  }
 
-  if (error) return json({ error: error.message }, 500);
   return json({ ok: true });
 }
-

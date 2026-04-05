@@ -21,8 +21,7 @@ import { useRealtimeSync } from '@/lib/realtime/useRealtimeSync';
 import { useHiddenSuggestionIds, useRecordSuggestionInteraction } from '@/lib/query/hooks/useAISuggestionsQuery';
 import { SuggestionType } from '@/lib/supabase/aiSuggestions';
 import { isDebugMode, generateFakeContacts, fakeDeal } from '@/lib/debug';
-import { supabase } from '@/lib/supabase/client';
-// supabase is now a noop shim - seedInboxDebug updates will use it as-is (data won't persist)
+// supabase client removed - debug seed uses fetch() calls
 
 // Tipos para sugestões de IA (BIRTHDAY removido - será implementado em widget separado)
 export type AISuggestionType = 'UPSELL' | 'RESCUE' | 'STALLED';
@@ -526,8 +525,8 @@ export const useInboxController = () => {
       showToast('Ative o Debug Mode para usar o Seed Inbox.', 'info');
       return;
     }
-    if (!supabase || !profile?.id || !activeBoardId || !activeBoard?.stages?.length) {
-      showToast('Supabase/board não configurado para seed.', 'error');
+    if (!profile?.id || !activeBoardId || !activeBoard?.stages?.length) {
+      showToast('Board não configurado para seed.', 'error');
       return;
     }
 
@@ -551,10 +550,8 @@ export const useInboxController = () => {
         totalValue: 0,
       } as any);
 
-      await supabase
-        .from('contacts')
-        .update({ created_at: fortyDaysAgo.toISOString() })
-        .eq('id', createdContact.id);
+      // Note: debug seed - date backdating not possible without server API
+      // The contact/deal will be created with current timestamps
 
       const firstStage = activeBoard.stages[0];
 
@@ -577,11 +574,6 @@ export const useInboxController = () => {
         isLost: false,
       } as any);
 
-      await supabase
-        .from('deals')
-        .update({ updated_at: fortyDaysAgo.toISOString(), is_won: true })
-        .eq('id', upsellDeal.id);
-
       // Deal parado há > 7d (Stalled)
       const stalled = fakeDeal();
       const stalledDeal = await createDealMutation.mutateAsync({
@@ -600,11 +592,6 @@ export const useInboxController = () => {
         isWon: false,
         isLost: false,
       } as any);
-
-      await supabase
-        .from('deals')
-        .update({ updated_at: tenDaysAgo.toISOString() })
-        .eq('id', stalledDeal.id);
 
       // Garante que o cliente também tem histórico antigo (alternativo ao created_at)
       updateContactMutation.mutate({

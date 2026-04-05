@@ -23,8 +23,8 @@ function json(body: unknown, status = 200): Response {
  */
 export async function POST(req: Request) {
   try {
-    const { model, supabase, organizationId } = await requireAITaskContext(req);
-    const enabled = await isAIFeatureEnabled(supabase as any, organizationId, 'ai_board_generate_structure');
+    const { model, organizationId } = await requireAITaskContext(req);
+    const enabled = await isAIFeatureEnabled(null, organizationId, 'ai_board_generate_structure');
     if (!enabled) {
       return json({ error: { code: 'AI_FEATURE_DISABLED', message: 'Função de IA desativada: Gerar estrutura de board.' } }, 403);
     }
@@ -43,7 +43,7 @@ export async function POST(req: Request) {
             { id: 'OTHER', name: 'Outros' },
           ];
 
-    const resolved = await getResolvedPrompt(supabase, organizationId, 'task_boards_generate_structure');
+    const resolved = await getResolvedPrompt(null, organizationId, 'task_boards_generate_structure');
     const prompt = renderPromptTemplate(resolved?.content || '', {
       description,
       lifecycleJson: JSON.stringify(lifecycleList),

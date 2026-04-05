@@ -32,6 +32,10 @@ vi.mock('@/lib/supabase/staticAdminClient', () => ({
   createStaticAdminClient: () => supabaseMock,
 }))
 
+vi.mock('@/lib/supabase/prismaAdapter', () => ({
+  createSupabasePrismaAdapter: () => supabaseMock,
+}))
+
 import { createCRMTools } from '@/lib/ai/tools'
 
 beforeEach(() => {

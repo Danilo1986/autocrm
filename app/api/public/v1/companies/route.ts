@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { authPublicApi } from '@/lib/public-api/auth';
-import { createStaticAdminClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
 import { decodeOffsetCursor, encodeOffsetCursor, parseLimit } from '@/lib/public-api/cursor';
 import { normalizeText, normalizeUrl } from '@/lib/public-api/sanitize';
 
@@ -12,6 +12,17 @@ const CompanyUpsertSchema = z.object({
   website: z.string().optional(),
   industry: z.string().optional(),
 }).strict();
+
+function toSnakeCase(c: any) {
+  return {
+    id: c.id,
+    name: c.name,
+    website: c.website ?? null,
+    industry: c.industry ?? null,
+    created_at: c.createdAt,
+    updated_at: c.updatedAt,
+  };
+}
 
 export async function GET(request: Request) {
   const auth = await authPublicApi(request);
@@ -24,38 +35,43 @@ export async function GET(request: Request) {
   const limit = parseLimit(url.searchParams.get('limit'));
   const offset = decodeOffsetCursor(url.searchParams.get('cursor'));
 
-  const sb = createStaticAdminClient();
-  let query = sb
-    .from('crm_companies')
-    .select('id,name,website,industry,created_at,updated_at', { count: 'exact' })
-    .eq('organization_id', auth.organizationId)
-    .is('deleted_at', null)
-    .order('created_at', { ascending: false });
+  try {
+    const where: any = {
+      organizationId: auth.organizationId,
+    };
 
-  if (website) query = query.eq('website', website);
-  if (name) query = query.ilike('name', name);
-  if (q) query = query.or(`name.ilike.%${q}%,website.ilike.%${q}%`);
+    if (website) where.website = website;
+    if (name) where.name = { equals: name, mode: 'insensitive' };
+    if (q) {
+      where.OR = [
+        { name: { contains: q, mode: 'insensitive' } },
+        { website: { contains: q, mode: 'insensitive' } },
+      ];
+    }
 
-  const from = offset;
-  const to = offset + limit - 1;
-  const { data, count, error } = await query.range(from, to);
-  if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
+    const select = { id: true, name: true, website: true, industry: true, createdAt: true, updatedAt: true };
 
-  const total = count ?? 0;
-  const nextOffset = to + 1;
-  const nextCursor = nextOffset < total ? encodeOffsetCursor(nextOffset) : null;
+    const [data, total] = await Promise.all([
+      prisma.crmCompany.findMany({
+        where,
+        select,
+        orderBy: { createdAt: 'desc' },
+        skip: offset,
+        take: limit,
+      }),
+      prisma.crmCompany.count({ where }),
+    ]);
 
-  return NextResponse.json({
-    data: (data || []).map((c: any) => ({
-      id: c.id,
-      name: c.name,
-      website: c.website ?? null,
-      industry: c.industry ?? null,
-      created_at: c.created_at,
-      updated_at: c.updated_at,
-    })),
-    nextCursor,
-  });
+    const nextOffset = offset + limit;
+    const nextCursor = nextOffset < total ? encodeOffsetCursor(nextOffset) : null;
+
+    return NextResponse.json({
+      data: data.map(toSnakeCase),
+      nextCursor,
+    });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
+  }
 }
 
 export async function POST(request: Request) {
@@ -76,60 +92,50 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Provide website or name', code: 'VALIDATION_ERROR' }, { status: 422 });
   }
 
-  const sb = createStaticAdminClient();
+  try {
+    const select = { id: true, name: true, website: true, industry: true, createdAt: true, updatedAt: true };
 
-  let lookup = sb
-    .from('crm_companies')
-    .select('id')
-    .eq('organization_id', auth.organizationId)
-    .is('deleted_at', null);
+    const lookupWhere: any = {
+      organizationId: auth.organizationId,
+    };
+    if (website) {
+      lookupWhere.website = website;
+    } else if (name) {
+      lookupWhere.name = { equals: name, mode: 'insensitive' };
+    }
 
-  if (website) lookup = lookup.eq('website', website);
-  else if (name) lookup = lookup.ilike('name', name);
+    const existing = await prisma.crmCompany.findFirst({ where: lookupWhere, select: { id: true } });
 
-  const existing = await lookup.maybeSingle();
-  if (existing.error) return NextResponse.json({ error: existing.error.message, code: 'DB_ERROR' }, { status: 500 });
+    if (existing?.id) {
+      const updateData: any = {
+        website,
+        industry,
+      };
+      if (name) updateData.name = name;
 
-  const now = new Date().toISOString();
-  const payload: any = {
-    organization_id: auth.organizationId,
-    name: name || '',
-    website,
-    industry,
-    updated_at: now,
-  };
+      const data = await prisma.crmCompany.update({
+        where: { id: existing.id },
+        data: updateData,
+        select,
+      });
+      return NextResponse.json({ data: toSnakeCase(data), action: 'updated' });
+    }
 
-  if (existing.data?.id) {
-    if (!payload.name) delete payload.name;
-    const { data, error } = await sb
-      .from('crm_companies')
-      .update(payload)
-      .eq('id', existing.data.id)
-      .select('id,name,website,industry,created_at,updated_at')
-      .single();
-    if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
-    return NextResponse.json({ data, action: 'updated' });
+    if (!name) {
+      return NextResponse.json({ error: 'Name is required to create a new company', code: 'VALIDATION_ERROR' }, { status: 422 });
+    }
+
+    const data = await prisma.crmCompany.create({
+      data: {
+        organizationId: auth.organizationId,
+        name,
+        website,
+        industry,
+      },
+      select,
+    });
+    return NextResponse.json({ data: toSnakeCase(data), action: 'created' }, { status: 201 });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
   }
-
-  if (!name) {
-    return NextResponse.json({ error: 'Name is required to create a new company', code: 'VALIDATION_ERROR' }, { status: 422 });
-  }
-
-  const insertPayload = {
-    organization_id: auth.organizationId,
-    name,
-    website,
-    industry,
-    created_at: now,
-    updated_at: now,
-  };
-
-  const { data, error } = await sb
-    .from('crm_companies')
-    .insert(insertPayload)
-    .select('id,name,website,industry,created_at,updated_at')
-    .single();
-  if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
-  return NextResponse.json({ data, action: 'created' }, { status: 201 });
 }
-

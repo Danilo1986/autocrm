@@ -2,48 +2,25 @@
 // DELETE THIS FILE BEFORE PRODUCTION!
 
 import { NextResponse } from 'next/server';
-import { createStaticAdminClient as createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
 import type { CRMCallOptions } from '@/types/ai';
 import { isAllowedOrigin } from '@/lib/security/sameOrigin';
 
 export const maxDuration = 60;
 
-// Test configuration - uses service role
 const isTestRouteEnabled =
     process.env.NODE_ENV === 'development' &&
     String(process.env.ALLOW_AI_TEST_ROUTE).toLowerCase() === 'true';
 
-/**
- * Handler HTTP `POST` deste endpoint (Next.js Route Handler).
- *
- * @param {Request} req - Objeto da requisição.
- * @returns {Promise<NextResponse<{ error: string; }> | NextResponse<{ success: boolean; tool: any; context: { boardId: any; stageName: any; }; stage: { id: any; name: any; label: any; }; dealsCount: number; deals: { ...; }[]; }>>} Retorna um valor do tipo `Promise<NextResponse<{ error: string; }> | NextResponse<{ success: boolean; tool: any; context: { boardId: any; stageName: any; }; stage: { id: any; name: any; label: any; }; dealsCount: number; deals: { ...; }[]; }>>`.
- */
 export async function POST(req: Request) {
-    // Dev-only guard: this endpoint uses the Supabase Service Role key.
-    // Deny by default in all environments.
     if (!isTestRouteEnabled) {
         return NextResponse.json({ error: 'Not Found' }, { status: 404 });
     }
 
-    // Mitigação CSRF / hardening (mesmo em dev): só aceita same-origin quando Origin existir.
     if (!isAllowedOrigin(req)) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    // Prefer new secret key format, fallback to legacy service_role key
-    const supabaseServiceKey = process.env.SUPABASE_SECRET_KEY
-        || process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-    if (!supabaseUrl || !supabaseServiceKey) {
-        return NextResponse.json(
-            { error: 'Missing Supabase env vars for test route' },
-            { status: 500 }
-        );
-    }
-
-    const supabase = createClient();
     const body = await req.json().catch(() => null);
 
     if (!body || typeof body !== 'object') {
@@ -77,9 +54,6 @@ export async function POST(req: Request) {
     const toolName = body.tool || 'listDealsByStage';
     const toolArgs = body.args || {};
 
-    // Avoid logging sensitive org context in dev by default.
-
-    // Simulate what the tools do
     const targetBoardId = toolArgs.boardId || context.boardId;
     const stageName = toolArgs.stageName || 'Proposta';
 
@@ -88,12 +62,17 @@ export async function POST(req: Request) {
     }
 
     // Test: Find stage
-    const { data: stages } = await supabase
-        .from('board_stages')
-        .select('id, name, label')
-        .eq('organization_id', context.organizationId)
-        .eq('board_id', targetBoardId)
-        .or(`name.ilike.%${stageName}%,label.ilike.%${stageName}%`);
+    const stages = await prisma.boardStage.findMany({
+        where: {
+            organizationId: context.organizationId,
+            boardId: targetBoardId,
+            OR: [
+                { name: { contains: stageName, mode: 'insensitive' } },
+                { label: { contains: stageName, mode: 'insensitive' } },
+            ],
+        },
+        select: { id: true, name: true, label: true },
+    });
 
     if (!stages || stages.length === 0) {
         return NextResponse.json({
@@ -105,18 +84,18 @@ export async function POST(req: Request) {
     const stageId = stages[0].id;
 
     // Test: Find deals
-    const { data: deals } = await supabase
-        .from('deals')
-        .select('id, title, value, is_won, is_lost')
-        .eq('organization_id', context.organizationId)
-        .eq('board_id', targetBoardId)
-        .eq('stage_id', stageId)
-        .order('value', { ascending: false })
-        .limit(50);
+    const deals = await prisma.deal.findMany({
+        where: {
+            organizationId: context.organizationId,
+            boardId: targetBoardId,
+            stageId,
+        },
+        select: { id: true, title: true, value: true, isWon: true, isLost: true },
+        orderBy: { value: 'desc' },
+        take: 50,
+    });
 
-    // Compat: deals legados podem ter is_won/is_lost = NULL.
-    // Considera NULL como "aberto".
-    const openDeals = (deals || []).filter((d: any) => !d.is_won && !d.is_lost).slice(0, 10);
+    const openDeals = deals.filter((d) => !d.isWon && !d.isLost).slice(0, 10);
 
     return NextResponse.json({
         success: true,

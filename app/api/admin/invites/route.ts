@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
+import { auth } from '@/lib/auth/auth';
 import { isAllowedOrigin } from '@/lib/security/sameOrigin';
 
 function json<T>(body: T, status = 200): Response {
@@ -9,8 +10,6 @@ function json<T>(body: T, status = 200): Response {
   });
 }
 
-type Role = 'admin' | 'vendedor';
-
 const CreateInviteSchema = z
   .object({
     role: z.enum(['admin', 'vendedor']).default('vendedor'),
@@ -19,66 +18,58 @@ const CreateInviteSchema = z
   })
   .strict();
 
-/**
- * Handler HTTP `GET` deste endpoint (Next.js Route Handler).
- * @returns {Promise<Response>} Retorna um valor do tipo `Promise<Response>`.
- */
 export async function GET() {
-  const supabase = await createClient();
+  const session = await auth();
+  if (!session?.user?.id) return json({ error: 'Unauthorized' }, 401);
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const me = await prisma.profile.findUnique({
+    where: { id: session.user.id },
+    select: { id: true, role: true, organizationId: true },
+  });
 
-  if (!user) return json({ error: 'Unauthorized' }, 401);
-
-  const { data: me, error: meError } = await supabase
-    .from('profiles')
-    .select('id, role, organization_id')
-    .eq('id', user.id)
-    .single();
-
-  if (meError || !me?.organization_id) return json({ error: 'Profile not found' }, 404);
+  if (!me?.organizationId) return json({ error: 'Profile not found' }, 404);
   if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
 
-  // Return only active (not used) invites, and let UI decide how to show expiration.
-  const { data: invites, error } = await supabase
-    .from('organization_invites')
-    .select('id, token, role, email, created_at, expires_at, used_at, created_by')
-    .eq('organization_id', me.organization_id)
-    .is('used_at', null)
-    .limit(200)
-    .order('created_at', { ascending: false });
+  const invites = await prisma.organizationInvite.findMany({
+    where: {
+      organizationId: me.organizationId,
+      usedAt: null,
+    },
+    select: {
+      id: true, token: true, role: true, email: true,
+      createdAt: true, expiresAt: true, usedAt: true, createdBy: true,
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 200,
+  });
 
-  if (error) return json({ error: error.message }, 500);
+  // Map to snake_case for backwards compat
+  const mapped = invites.map(i => ({
+    id: i.id,
+    token: i.token,
+    role: i.role,
+    email: i.email,
+    created_at: i.createdAt,
+    expires_at: i.expiresAt,
+    used_at: i.usedAt,
+    created_by: i.createdBy,
+  }));
 
-  return json({ invites: invites || [] });
+  return json({ invites: mapped });
 }
 
-/**
- * Handler HTTP `POST` deste endpoint (Next.js Route Handler).
- *
- * @param {Request} req - Objeto da requisição.
- * @returns {Promise<Response>} Retorna um valor do tipo `Promise<Response>`.
- */
 export async function POST(req: Request) {
   if (!isAllowedOrigin(req)) return json({ error: 'Forbidden' }, 403);
 
-  const supabase = await createClient();
+  const session = await auth();
+  if (!session?.user?.id) return json({ error: 'Unauthorized' }, 401);
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const me = await prisma.profile.findUnique({
+    where: { id: session.user.id },
+    select: { id: true, role: true, organizationId: true },
+  });
 
-  if (!user) return json({ error: 'Unauthorized' }, 401);
-
-  const { data: me, error: meError } = await supabase
-    .from('profiles')
-    .select('id, role, organization_id')
-    .eq('id', user.id)
-    .single();
-
-  if (meError || !me?.organization_id) return json({ error: 'Profile not found' }, 404);
+  if (!me?.organizationId) return json({ error: 'Profile not found' }, 404);
   if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
 
   const raw = await req.json().catch(() => null);
@@ -88,25 +79,38 @@ export async function POST(req: Request) {
     return json({ error: 'Invalid payload', details: parsed.error.flatten() }, 400);
   }
 
-  const expiresAt = parsed.data.expiresAt ?? null;
+  const expiresAt = parsed.data.expiresAt ? new Date(parsed.data.expiresAt) : null;
 
-  const { data: invite, error } = await supabase
-    .from('organization_invites')
-    .insert({
-      organization_id: me.organization_id,
-      role: parsed.data.role as Role,
-      email: parsed.data.email ?? null,
-      expires_at: expiresAt,
-      created_by: me.id,
-    })
-    .select('id, token, role, email, created_at, expires_at, used_at, created_by')
-    .single();
+  try {
+    const invite = await prisma.organizationInvite.create({
+      data: {
+        organizationId: me.organizationId,
+        role: parsed.data.role,
+        email: parsed.data.email ?? null,
+        expiresAt,
+        createdBy: me.id,
+      },
+      select: {
+        id: true, token: true, role: true, email: true,
+        createdAt: true, expiresAt: true, usedAt: true, createdBy: true,
+      },
+    });
 
-  if (error) {
-    console.error('[admin/invites POST] Database error:', error);
-    return json({ error: error.message }, 500);
+    const mapped = {
+      id: invite.id,
+      token: invite.token,
+      role: invite.role,
+      email: invite.email,
+      created_at: invite.createdAt,
+      expires_at: invite.expiresAt,
+      used_at: invite.usedAt,
+      created_by: invite.createdBy,
+    };
+
+    console.log('[admin/invites POST] Created invite:', { id: invite.id, token: invite.token, expires_at: invite.expiresAt });
+    return json({ invite: mapped }, 201);
+  } catch (err: any) {
+    console.error('[admin/invites POST] Database error:', err);
+    return json({ error: err.message }, 500);
   }
-
-  console.log('[admin/invites POST] Created invite:', { id: invite?.id, token: invite?.token, expires_at: invite?.expires_at });
-  return json({ invite }, 201);
 }

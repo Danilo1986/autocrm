@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { authPublicApi } from '@/lib/public-api/auth';
-import { isValidUUID } from '@/lib/supabase/utils';
+import { isValidUUID } from '@/lib/utils/uuid';
 import { moveStageByDealId, moveStageByIdentity } from '@/lib/public-api/dealsMoveStage';
 
 export const runtime = 'nodejs';

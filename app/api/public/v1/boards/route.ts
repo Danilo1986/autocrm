@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { authPublicApi } from '@/lib/public-api/auth';
-import { createStaticAdminClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
 import { decodeOffsetCursor, encodeOffsetCursor, parseLimit } from '@/lib/public-api/cursor';
 
 export const runtime = 'nodejs';
@@ -14,40 +14,46 @@ export async function GET(request: Request) {
   const key = (url.searchParams.get('key') || '').trim();
   const limit = parseLimit(url.searchParams.get('limit'));
   const offset = decodeOffsetCursor(url.searchParams.get('cursor'));
-  const from = offset;
-  const to = offset + limit - 1;
 
-  const sb = createStaticAdminClient();
-  let query = sb
-    .from('boards')
-    .select('id,key,name,description,position,is_default,created_at,updated_at', { count: 'exact' })
-    .eq('organization_id', auth.organizationId)
-    .is('deleted_at', null)
-    .order('position', { ascending: true })
-    .order('created_at', { ascending: true });
+  try {
+    const where: any = {
+      organizationId: auth.organizationId,
+    };
 
-  if (key) query = query.eq('key', key);
-  if (q) query = query.or(`name.ilike.%${q}%,key.ilike.%${q}%`);
+    if (key) where.key = key;
+    if (q) {
+      where.OR = [
+        { name: { contains: q, mode: 'insensitive' } },
+        { key: { contains: q, mode: 'insensitive' } },
+      ];
+    }
 
-  const { data, count, error } = await query.range(from, to);
-  if (error) {
-    return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
+    const [data, total] = await Promise.all([
+      prisma.board.findMany({
+        where,
+        select: { id: true, key: true, name: true, description: true, position: true, isDefault: true, createdAt: true, updatedAt: true },
+        orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+        skip: offset,
+        take: limit,
+      }),
+      prisma.board.count({ where }),
+    ]);
+
+    const nextOffset = offset + limit;
+    const nextCursor = nextOffset < total ? encodeOffsetCursor(nextOffset) : null;
+
+    return NextResponse.json({
+      data: data.map((b) => ({
+        id: b.id,
+        key: b.key ?? null,
+        name: b.name,
+        description: b.description ?? null,
+        position: b.position ?? 0,
+        is_default: !!b.isDefault,
+      })),
+      nextCursor,
+    });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
   }
-
-  const total = count ?? 0;
-  const nextOffset = to + 1;
-  const nextCursor = nextOffset < total ? encodeOffsetCursor(nextOffset) : null;
-
-  return NextResponse.json({
-    data: (data || []).map((b: any) => ({
-      id: b.id,
-      key: b.key ?? null,
-      name: b.name,
-      description: b.description ?? null,
-      position: b.position ?? 0,
-      is_default: !!b.is_default,
-    })),
-    nextCursor,
-  });
 }
-

@@ -1,20 +1,22 @@
-import { createStaticAdminClient } from '@/lib/supabase/server';
-import { isValidUUID, sanitizeUUID } from '@/lib/supabase/utils';
+import { prisma } from '@/lib/db/prisma';
+import { isValidUUID, sanitizeUUID } from '@/lib/utils/uuid';
 
 export async function resolveBoardId(opts: { organizationId: string; boardKeyOrId: string }) {
-  const sb = createStaticAdminClient();
   const value = opts.boardKeyOrId.trim();
-  const query = sb
-    .from('boards')
-    .select('id')
-    .eq('organization_id', opts.organizationId)
-    .is('deleted_at', null)
-    .match(isValidUUID(value) ? { id: value } : { key: value })
-    .maybeSingle();
+  const where: any = {
+    organizationId: opts.organizationId,
+  };
+  if (isValidUUID(value)) {
+    where.id = value;
+  } else {
+    where.key = value;
+  }
 
-  const { data, error } = await query;
-  if (error) throw error;
-  const id = sanitizeUUID((data as any)?.id);
+  const data = await prisma.board.findFirst({
+    where,
+    select: { id: true },
+  });
+  const id = sanitizeUUID(data?.id);
   return id || null;
 }
 
@@ -23,16 +25,13 @@ export async function resolveBoardIdFromKey(opts: { organizationId: string; boar
 }
 
 export async function resolveFirstStageId(opts: { organizationId: string; boardId: string }) {
-  const sb = createStaticAdminClient();
-  const { data, error } = await sb
-    .from('board_stages')
-    .select('id')
-    .eq('organization_id', opts.organizationId)
-    .eq('board_id', opts.boardId)
-    .order('order', { ascending: true })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  return sanitizeUUID((data as any)?.id) || null;
+  const data = await prisma.boardStage.findFirst({
+    where: {
+      organizationId: opts.organizationId,
+      boardId: opts.boardId,
+    },
+    select: { id: true },
+    orderBy: { order: 'asc' },
+  });
+  return sanitizeUUID(data?.id) || null;
 }
-

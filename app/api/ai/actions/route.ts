@@ -1,21 +1,10 @@
 // Route Handler for AI "actions" (RPC-style helpers)
-//
-// This is the supported non-streaming endpoint for UI features that need a single, direct
-// AI result (e.g. email draft, board generation, daily briefing).
-//
-// IMPORTANT:
-// - Auth is cookie-based (Supabase SSR).
-// - API keys are read server-side from `organization_settings`.
-// - This is NOT the streaming Agent chat endpoint; that one is `/api/ai/chat`.
-//
-// Contract:
-// POST { action: string, data: object }
-// -> 200 { result?: any, error?: string, consentType?: string, retryAfter?: number }
 
 import { generateObject, generateText } from 'ai';
 import { getModel, type AIProvider } from '@/lib/ai/config';
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
+import { auth } from '@/lib/auth/auth';
 import { isAllowedOrigin } from '@/lib/security/sameOrigin';
 import { getResolvedPrompt } from '@/lib/ai/prompts/server';
 import { renderPromptTemplate } from '@/lib/ai/prompts/render';
@@ -131,27 +120,16 @@ function json<T>(body: T, status = 200): Response {
   });
 }
 
-/**
- * Handler HTTP `POST` deste endpoint (Next.js Route Handler).
- *
- * @param {Request} req - Objeto da requisição.
- * @returns {Promise<Response>} Retorna um valor do tipo `Promise<Response>`.
- */
 export async function POST(req: Request) {
-  // Mitigação CSRF: bloqueia POST cross-site em endpoint que usa auth via cookies.
   if (!isAllowedOrigin(req)) {
     return json<AIActionResponse>({ error: 'Forbidden' }, 403);
   }
 
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
+  const session = await auth();
+  if (!session?.user?.id) {
     return json<AIActionResponse>({ error: 'Unauthorized' }, 401);
   }
+  const user = session.user;
 
   const body = await req.json().catch(() => null);
   const action = body?.action as AIAction | undefined;
@@ -161,23 +139,20 @@ export async function POST(req: Request) {
     return json<AIActionResponse>({ error: "Invalid request format. Missing 'action'." }, 400);
   }
 
-  const { data: profile, error: profileError } = await supabase
-    .from('profiles')
-    .select('organization_id')
-    .eq('id', user.id)
-    .single();
+  const profile = await prisma.profile.findUnique({
+    where: { id: user.id },
+    select: { organizationId: true },
+  });
 
-  if (profileError || !profile?.organization_id) {
+  if (!profile?.organizationId) {
     return json<AIActionResponse>({ error: 'Profile not found' }, 404);
   }
 
-  const { data: orgSettings, error: orgError } = await supabase
-    .from('organization_settings')
-    .select('ai_enabled, ai_provider, ai_model, ai_google_key, ai_openai_key, ai_anthropic_key')
-    .eq('organization_id', profile.organization_id)
-    .single();
+  const orgSettings = await prisma.organizationSettings.findUnique({
+    where: { organizationId: profile.organizationId },
+  });
 
-  const aiEnabled = typeof (orgSettings as any)?.ai_enabled === 'boolean' ? (orgSettings as any).ai_enabled : true;
+  const aiEnabled = typeof orgSettings?.aiEnabled === 'boolean' ? orgSettings.aiEnabled : true;
   if (!aiEnabled) {
     return json<AIActionResponse>(
       { error: 'IA desativada pela organização. Um admin pode ativar em Configurações → Central de I.A.' },
@@ -185,7 +160,7 @@ export async function POST(req: Request) {
     );
   }
 
-  // Feature flag per action (default: enabled)
+  // Feature flag per action
   const featureKeyByAction: Partial<Record<AIAction, string>> = {
     analyzeLead: 'ai_deal_analyze',
     generateEmailDraft: 'ai_email_draft',
@@ -202,7 +177,7 @@ export async function POST(req: Request) {
 
   const featureKey = featureKeyByAction[action];
   if (featureKey) {
-    const enabled = await isAIFeatureEnabled(supabase as any, profile.organization_id as any, featureKey);
+    const enabled = await isAIFeatureEnabled(null as any, profile.organizationId as any, featureKey);
     if (!enabled) {
       return json<AIActionResponse>(
         { error: `Função de IA desativada para esta ação (${action}).` },
@@ -211,76 +186,59 @@ export async function POST(req: Request) {
     }
   }
 
-  // Frontend expects "AI consent required" as a *payload* error.
-  const provider: AIProvider = (orgSettings?.ai_provider ?? 'google') as AIProvider;
+  const provider: AIProvider = (orgSettings?.aiProvider ?? 'google') as AIProvider;
   const apiKey: string | null =
     provider === 'google'
-      ? (orgSettings?.ai_google_key ?? null)
+      ? (orgSettings?.aiGoogleKey ?? null)
       : provider === 'openai'
-        ? (orgSettings?.ai_openai_key ?? null)
-        : (orgSettings?.ai_anthropic_key ?? null);
+        ? (orgSettings?.aiOpenaiKey ?? null)
+        : (orgSettings?.aiAnthropicKey ?? null);
 
-  if (orgError || !apiKey) {
+  if (!apiKey) {
     return json<AIActionResponse>({ error: 'AI consent required', consentType: 'AI_CONSENT' }, 200);
   }
 
-  const modelId = orgSettings.ai_model || '';
+  const modelId = orgSettings?.aiModel || '';
   const model = getModel(provider, apiKey, modelId);
+
+  // Helper for getResolvedPrompt - pass null as supabase since it should use prisma internally
+  const orgId = profile.organizationId as string;
 
   try {
     switch (action) {
       case 'analyzeLead': {
         const { deal, stageLabel } = data as any;
-        const resolved = await getResolvedPrompt(supabase as any, profile.organization_id as any, 'task_deals_analyze');
+        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_deals_analyze');
         const prompt = renderPromptTemplate(resolved?.content || '', {
           dealTitle: deal?.title || '',
           dealValue: deal?.value?.toLocaleString?.('pt-BR') ?? deal?.value ?? 0,
           stageLabel: stageLabel || deal?.status || '',
           probability: deal?.probability || 50,
         });
-        const result = await generateObject({
-          model,
-          maxRetries: 3,
-          schema: AnalyzeLeadSchema,
-          prompt,
-        });
+        const result = await generateObject({ model, maxRetries: 3, schema: AnalyzeLeadSchema, prompt });
         return json<AIActionResponse>({ result: result.object });
       }
 
       case 'generateEmailDraft': {
         const { deal } = data as any;
-        const resolved = await getResolvedPrompt(supabase as any, profile.organization_id as any, 'task_deals_email_draft');
+        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_deals_email_draft');
         const prompt = renderPromptTemplate(resolved?.content || '', {
           contactName: deal?.contactName || 'Cliente',
           companyName: deal?.companyName || 'Empresa',
           dealTitle: deal?.title || '',
         });
-        const result = await generateText({
-          model,
-          maxRetries: 3,
-          prompt,
-        });
+        const result = await generateText({ model, maxRetries: 3, prompt });
         return json<AIActionResponse>({ result: result.text });
       }
 
       case 'rewriteMessageDraft': {
-        const {
-          channel,
-          currentSubject,
-          currentMessage,
-          nextBestAction,
-          cockpitSnapshot,
-        } = data as any;
-
+        const { channel, currentSubject, currentMessage, nextBestAction, cockpitSnapshot } = data as any;
         const channelLabel = channel === 'EMAIL' ? 'EMAIL' : 'WHATSAPP';
-
         const snapshotText = safeContextText(cockpitSnapshot);
         const nbaText = safeContextText(nextBestAction);
 
         const result = await generateObject({
-          model,
-          maxRetries: 3,
-          schema: RewriteMessageDraftSchema,
+          model, maxRetries: 3, schema: RewriteMessageDraftSchema,
           prompt: `Você é um vendedor sênior e copywriter.
 Sua tarefa é REESCREVER (melhorar) uma mensagem para enviar ao cliente.
 
@@ -315,15 +273,13 @@ REGRAS:
 
 Retorne APENAS no formato do schema (subject opcional, message obrigatório).`,
         });
-
         return json<AIActionResponse>({ result: result.object });
       }
 
       case 'generateRescueMessage': {
         const { deal, channel } = data as any;
         const result = await generateText({
-          model,
-          maxRetries: 3,
+          model, maxRetries: 3,
           prompt: `Gere uma mensagem de resgate/follow-up para reativar um deal parado.
 DEAL: ${deal?.title} (${deal?.contactName || ''})
 CANAL: ${channel}
@@ -334,90 +290,49 @@ Responda em português do Brasil.`,
 
       case 'generateBoardStructure': {
         const { description, lifecycleStages } = data as any;
-        const lifecycleList =
-          Array.isArray(lifecycleStages) && lifecycleStages.length > 0
-            ? lifecycleStages.map((s: any) => ({ id: s?.id || '', name: s?.name || String(s) }))
-            : [
-                { id: 'LEAD', name: 'Lead' },
-                { id: 'MQL', name: 'MQL' },
-                { id: 'PROSPECT', name: 'Oportunidade' },
-                { id: 'CUSTOMER', name: 'Cliente' },
-                { id: 'OTHER', name: 'Outros' },
-              ];
-
-        const resolved = await getResolvedPrompt(supabase as any, profile.organization_id as any, 'task_boards_generate_structure');
-        const prompt = renderPromptTemplate(resolved?.content || '', {
-          description,
-          lifecycleJson: JSON.stringify(lifecycleList),
-        });
-        const result = await generateObject({
-          model,
-          maxRetries: 3,
-          schema: BoardStructureSchema,
-          prompt,
-        });
-
+        const lifecycleList = Array.isArray(lifecycleStages) && lifecycleStages.length > 0
+          ? lifecycleStages.map((s: any) => ({ id: s?.id || '', name: s?.name || String(s) }))
+          : [
+              { id: 'LEAD', name: 'Lead' }, { id: 'MQL', name: 'MQL' },
+              { id: 'PROSPECT', name: 'Oportunidade' }, { id: 'CUSTOMER', name: 'Cliente' },
+              { id: 'OTHER', name: 'Outros' },
+            ];
+        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_boards_generate_structure');
+        const prompt = renderPromptTemplate(resolved?.content || '', { description, lifecycleJson: JSON.stringify(lifecycleList) });
+        const result = await generateObject({ model, maxRetries: 3, schema: BoardStructureSchema, prompt });
         return json<AIActionResponse>({ result: result.object });
       }
 
       case 'generateBoardStrategy': {
         const { boardData } = data as any;
-        const resolved = await getResolvedPrompt(supabase as any, profile.organization_id as any, 'task_boards_generate_strategy');
-        const prompt = renderPromptTemplate(resolved?.content || '', {
-          boardName: boardData?.boardName || '',
-        });
-        const result = await generateObject({
-          model,
-          maxRetries: 3,
-          schema: BoardStrategySchema,
-          prompt,
-        });
+        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_boards_generate_strategy');
+        const prompt = renderPromptTemplate(resolved?.content || '', { boardName: boardData?.boardName || '' });
+        const result = await generateObject({ model, maxRetries: 3, schema: BoardStrategySchema, prompt });
         return json<AIActionResponse>({ result: result.object });
       }
 
       case 'refineBoardWithAI': {
         const { currentBoard, userInstruction, chatHistory } = data as any;
         const historyContext = chatHistory ? `\nHistórico:\n${JSON.stringify(chatHistory)}` : '';
-        const boardContext = currentBoard
-          ? `\nBoard atual (JSON):\n${JSON.stringify(currentBoard)}`
-          : '';
-        const resolved = await getResolvedPrompt(supabase as any, profile.organization_id as any, 'task_boards_refine');
-        const prompt = renderPromptTemplate(resolved?.content || '', {
-          userInstruction,
-          boardContext,
-          historyContext,
-        });
-        const result = await generateObject({
-          model,
-          maxRetries: 3,
-          schema: RefineBoardSchema,
-          prompt,
-        });
+        const boardContext = currentBoard ? `\nBoard atual (JSON):\n${JSON.stringify(currentBoard)}` : '';
+        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_boards_refine');
+        const prompt = renderPromptTemplate(resolved?.content || '', { userInstruction, boardContext, historyContext });
+        const result = await generateObject({ model, maxRetries: 3, schema: RefineBoardSchema, prompt });
         return json<AIActionResponse>({ result: result.object });
       }
 
       case 'generateObjectionResponse': {
         const { deal, objection } = data as any;
-        const resolved = await getResolvedPrompt(supabase as any, profile.organization_id as any, 'task_deals_objection_responses');
-        const prompt = renderPromptTemplate(resolved?.content || '', {
-          objection,
-          dealTitle: deal?.title || '',
-        });
-        const result = await generateObject({
-          model,
-          maxRetries: 3,
-          schema: ObjectionResponseSchema,
-          prompt,
-        });
+        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_deals_objection_responses');
+        const prompt = renderPromptTemplate(resolved?.content || '', { objection, dealTitle: deal?.title || '' });
+        const result = await generateObject({ model, maxRetries: 3, schema: ObjectionResponseSchema, prompt });
         return json<AIActionResponse>({ result: result.object });
       }
 
       case 'parseNaturalLanguageAction': {
         const { text } = data as any;
         const result = await generateObject({
-          model,
-          maxRetries: 3,
-          schema: ParsedActionSchema,
+          model, maxRetries: 3, schema: ParsedActionSchema,
           prompt: `Parse para CRM Action: "${text}".
 Campos: title, type (CALL/MEETING/EMAIL/TASK), date, contactName, companyName, confidence.`,
         });
@@ -427,12 +342,8 @@ Campos: title, type (CALL/MEETING/EMAIL/TASK), date, contactName, companyName, c
       case 'chatWithCRM': {
         const { message, context } = data as any;
         const result = await generateText({
-          model,
-          maxRetries: 3,
-          prompt: `Assistente CRM.
-Contexto: ${JSON.stringify(context)}
-Usuário: ${message}
-Responda em português.`,
+          model, maxRetries: 3,
+          prompt: `Assistente CRM.\nContexto: ${JSON.stringify(context)}\nUsuário: ${message}\nResponda em português.`,
         });
         return json<AIActionResponse>({ result: result.text });
       }
@@ -440,31 +351,23 @@ Responda em português.`,
       case 'generateBirthdayMessage': {
         const { contactName, age } = data as any;
         const result = await generateText({
-          model,
-          maxRetries: 3,
+          model, maxRetries: 3,
           prompt: `Parabéns para ${contactName} (${age || ''} anos). Curto e profissional.`,
         });
         return json<AIActionResponse>({ result: result.text });
       }
 
       case 'generateDailyBriefing': {
-        const resolved = await getResolvedPrompt(supabase as any, profile.organization_id as any, 'task_inbox_daily_briefing');
-        const prompt = renderPromptTemplate(resolved?.content || '', {
-          dataJson: JSON.stringify(data),
-        });
-        const result = await generateText({
-          model,
-          maxRetries: 3,
-          prompt,
-        });
+        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_inbox_daily_briefing');
+        const prompt = renderPromptTemplate(resolved?.content || '', { dataJson: JSON.stringify(data) });
+        const result = await generateText({ model, maxRetries: 3, prompt });
         return json<AIActionResponse>({ result: result.text });
       }
 
       case 'chatWithBoardAgent': {
         const { message, boardContext } = data as any;
         const result = await generateText({
-          model,
-          maxRetries: 3,
+          model, maxRetries: 3,
           prompt: `Persona: ${boardContext?.agentName}. Contexto: ${JSON.stringify(boardContext)}. Msg: ${message}`,
         });
         return json<AIActionResponse>({ result: result.text });
@@ -472,17 +375,11 @@ Responda em português.`,
 
       case 'generateSalesScript': {
         const { deal, scriptType, context } = data as any;
-        const resolved = await getResolvedPrompt(supabase as any, profile.organization_id as any, 'task_inbox_sales_script');
+        const resolved = await getResolvedPrompt(null as any, orgId as any, 'task_inbox_sales_script');
         const prompt = renderPromptTemplate(resolved?.content || '', {
-          scriptType: scriptType || 'geral',
-          dealTitle: deal?.title || '',
-          context: context || '',
+          scriptType: scriptType || 'geral', dealTitle: deal?.title || '', context: context || '',
         });
-        const result = await generateText({
-          model,
-          maxRetries: 3,
-          prompt,
-        });
+        const result = await generateText({ model, maxRetries: 3, prompt });
         return json<AIActionResponse>({ result: { script: result.text, scriptType, generatedFor: deal?.title } });
       }
 

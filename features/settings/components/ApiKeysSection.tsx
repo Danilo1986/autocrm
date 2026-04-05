@@ -4,7 +4,7 @@ import { Key, Copy, ExternalLink, CheckCircle2, Plus, Trash2, ShieldCheck, Refre
 import ConfirmModal from '@/components/ConfirmModal';
 import { useOptionalToast } from '@/context/ToastContext';
 import { useBoards } from '@/context/boards/BoardsContext';
-import { supabase } from '@/lib/supabase/client';
+// supabase client removed - uses fetch() for API key operations
 
 import { SettingsSection } from './SettingsSection';
 
@@ -73,18 +73,12 @@ export const ApiKeysSection: React.FC = () => {
   };
 
   const loadKeys = async () => {
-    if (!supabase) {
-      addToast('Supabase não configurado neste ambiente.', 'error');
-      return;
-    }
     setLoadingKeys(true);
     try {
-      const { data, error } = await supabase
-        .from('api_keys')
-        .select('id,name,key_prefix,created_at,last_used_at,revoked_at')
-        .order('created_at', { ascending: false });
-      if (error) throw error;
-      setKeys((data || []) as ApiKeyRow[]);
+      const res = await fetch('/api/settings/api-keys');
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Erro ao carregar chaves');
+      setKeys((json.data || []) as ApiKeyRow[]);
     } catch (e: any) {
       addToast(e?.message || 'Erro ao carregar chaves', 'error');
     } finally {
@@ -97,21 +91,21 @@ export const ApiKeysSection: React.FC = () => {
   }, []);
 
   const createKey = async () => {
-    if (!supabase) {
-      addToast('Supabase não configurado neste ambiente.', 'error');
-      return;
-    }
     const name = newKeyName.trim() || 'Integração';
     setCreating(true);
     setCreatedToken(null);
     setCreatedPrefix(null);
     setTestResult(null);
     try {
-      const { data, error } = await supabase.rpc('create_api_key', { p_name: name });
-      if (error) throw error;
-      const row = Array.isArray(data) ? data[0] : data;
-      const token = row?.token as string | undefined;
-      const prefix = row?.key_prefix as string | undefined;
+      const res = await fetch('/api/settings/api-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'create', name }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Erro ao criar chave');
+      const token = json.token as string | undefined;
+      const prefix = json.key_prefix as string | undefined;
       if (!token || !prefix) throw new Error('Resposta inválida ao criar chave');
       setCreatedToken(token);
       setCreatedPrefix(prefix);
@@ -126,14 +120,15 @@ export const ApiKeysSection: React.FC = () => {
   };
 
   const revokeKey = async (id: string) => {
-    if (!supabase) {
-      addToast('Supabase não configurado neste ambiente.', 'error');
-      return;
-    }
     setRevokingId(id);
     try {
-      const { error } = await supabase.rpc('revoke_api_key', { p_api_key_id: id });
-      if (error) throw error;
+      const res = await fetch('/api/settings/api-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'revoke', id }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Erro ao revogar chave');
       addToast('Chave revogada.', 'success');
       await loadKeys();
     } catch (e: any) {
@@ -144,19 +139,15 @@ export const ApiKeysSection: React.FC = () => {
   };
 
   const deleteRevokedKey = async (id: string) => {
-    if (!supabase) {
-      addToast('Supabase não configurado neste ambiente.', 'error');
-      return;
-    }
     setDeletingId(id);
     try {
-      // Segurança: só permite excluir se já estiver revogada
-      const { error } = await supabase
-        .from('api_keys')
-        .delete()
-        .eq('id', id)
-        .not('revoked_at', 'is', null);
-      if (error) throw error;
+      const res = await fetch('/api/settings/api-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', id }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Erro ao excluir chave');
       addToast('Chave excluída.', 'success');
       await loadKeys();
     } catch (e: any) {

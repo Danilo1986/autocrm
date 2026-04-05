@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
+import { auth } from '@/lib/auth/auth';
 import { isAllowedOrigin } from '@/lib/security/sameOrigin';
 import { AI_DEFAULT_MODELS } from '@/lib/ai/defaults';
 
@@ -25,106 +26,63 @@ const UpdateOrgAISettingsSchema = z
   })
   .strict();
 
-/**
- * Handler HTTP `GET` deste endpoint (Next.js Route Handler).
- * @returns {Promise<Response>} Retorna um valor do tipo `Promise<Response>`.
- */
 export async function GET() {
-  const supabase = await createClient();
+  const session = await auth();
+  if (!session?.user?.id) return json({ error: 'Unauthorized' }, 401);
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const profile = await prisma.profile.findUnique({
+    where: { id: session.user.id },
+    select: { organizationId: true, role: true },
+  });
 
-  if (!user) {
-    return json({ error: 'Unauthorized' }, 401);
-  }
+  if (!profile?.organizationId) return json({ error: 'Profile not found' }, 404);
 
-  const { data: profile, error: profileError } = await supabase
-    .from('profiles')
-    .select('organization_id, role')
-    .eq('id', user.id)
-    .single();
+  const orgSettings = await prisma.organizationSettings.findUnique({
+    where: { organizationId: profile.organizationId },
+  });
 
-  if (profileError || !profile?.organization_id) {
-    return json({ error: 'Profile not found' }, 404);
-  }
+  const aiEnabled = typeof orgSettings?.aiEnabled === 'boolean' ? orgSettings.aiEnabled : true;
 
-  const { data: orgSettings, error: orgError } = await supabase
-    .from('organization_settings')
-    .select('ai_enabled, ai_provider, ai_model, ai_google_key, ai_openai_key, ai_anthropic_key')
-    .eq('organization_id', profile.organization_id)
-    .maybeSingle();
-
-  if (orgError) {
-    return json({ error: orgError.message }, 500);
-  }
-
-  const aiEnabled = typeof orgSettings?.ai_enabled === 'boolean' ? orgSettings.ai_enabled : true;
-
-  // Security: members should NOT receive raw API keys.
   if (profile.role !== 'admin') {
     return json({
       aiEnabled,
-      aiProvider: (orgSettings?.ai_provider || 'google') as Provider,
-      aiModel: orgSettings?.ai_model || AI_DEFAULT_MODELS.google,
+      aiProvider: (orgSettings?.aiProvider || 'google') as Provider,
+      aiModel: orgSettings?.aiModel || AI_DEFAULT_MODELS.google,
       aiGoogleKey: '',
       aiOpenaiKey: '',
       aiAnthropicKey: '',
-      aiHasGoogleKey: Boolean(orgSettings?.ai_google_key),
-      aiHasOpenaiKey: Boolean(orgSettings?.ai_openai_key),
-      aiHasAnthropicKey: Boolean(orgSettings?.ai_anthropic_key),
+      aiHasGoogleKey: Boolean(orgSettings?.aiGoogleKey),
+      aiHasOpenaiKey: Boolean(orgSettings?.aiOpenaiKey),
+      aiHasAnthropicKey: Boolean(orgSettings?.aiAnthropicKey),
     });
   }
 
   return json({
     aiEnabled,
-    aiProvider: (orgSettings?.ai_provider || 'google') as Provider,
-    aiModel: orgSettings?.ai_model || AI_DEFAULT_MODELS.google,
-    aiGoogleKey: orgSettings?.ai_google_key || '',
-    aiOpenaiKey: orgSettings?.ai_openai_key || '',
-    aiAnthropicKey: orgSettings?.ai_anthropic_key || '',
-    aiHasGoogleKey: Boolean(orgSettings?.ai_google_key),
-    aiHasOpenaiKey: Boolean(orgSettings?.ai_openai_key),
-    aiHasAnthropicKey: Boolean(orgSettings?.ai_anthropic_key),
+    aiProvider: (orgSettings?.aiProvider || 'google') as Provider,
+    aiModel: orgSettings?.aiModel || AI_DEFAULT_MODELS.google,
+    aiGoogleKey: orgSettings?.aiGoogleKey || '',
+    aiOpenaiKey: orgSettings?.aiOpenaiKey || '',
+    aiAnthropicKey: orgSettings?.aiAnthropicKey || '',
+    aiHasGoogleKey: Boolean(orgSettings?.aiGoogleKey),
+    aiHasOpenaiKey: Boolean(orgSettings?.aiOpenaiKey),
+    aiHasAnthropicKey: Boolean(orgSettings?.aiAnthropicKey),
   });
 }
 
-/**
- * Handler HTTP `POST` deste endpoint (Next.js Route Handler).
- *
- * @param {Request} req - Objeto da requisição.
- * @returns {Promise<Response>} Retorna um valor do tipo `Promise<Response>`.
- */
 export async function POST(req: Request) {
-  // Mitigação CSRF: endpoint autenticado por cookies.
-  if (!isAllowedOrigin(req)) {
-    return json({ error: 'Forbidden' }, 403);
-  }
+  if (!isAllowedOrigin(req)) return json({ error: 'Forbidden' }, 403);
 
-  const supabase = await createClient();
+  const session = await auth();
+  if (!session?.user?.id) return json({ error: 'Unauthorized' }, 401);
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const profile = await prisma.profile.findUnique({
+    where: { id: session.user.id },
+    select: { organizationId: true, role: true },
+  });
 
-  if (!user) {
-    return json({ error: 'Unauthorized' }, 401);
-  }
-
-  const { data: profile, error: profileError } = await supabase
-    .from('profiles')
-    .select('organization_id, role')
-    .eq('id', user.id)
-    .single();
-
-  if (profileError || !profile?.organization_id) {
-    return json({ error: 'Profile not found' }, 404);
-  }
-
-  if (profile.role !== 'admin') {
-    return json({ error: 'Forbidden' }, 403);
-  }
+  if (!profile?.organizationId) return json({ error: 'Profile not found' }, 404);
+  if (profile.role !== 'admin') return json({ error: 'Forbidden' }, 403);
 
   const rawBody = await req.json().catch(() => null);
   const parsed = UpdateOrgAISettingsSchema.safeParse(rawBody);
@@ -134,37 +92,38 @@ export async function POST(req: Request) {
 
   const updates = parsed.data;
 
-  // Normalize empty-string keys to null
   const normalizeKey = (value: string | undefined) => {
     if (value === undefined) return undefined;
     const trimmed = value.trim();
     return trimmed.length === 0 ? null : trimmed;
   };
 
-  const dbUpdates: Record<string, unknown> = {
-    organization_id: profile.organization_id,
-    updated_at: new Date().toISOString(),
-  };
+  const dbUpdates: any = {};
 
-  if (updates.aiEnabled !== undefined) dbUpdates.ai_enabled = updates.aiEnabled;
-  if (updates.aiProvider !== undefined) dbUpdates.ai_provider = updates.aiProvider;
-  if (updates.aiModel !== undefined) dbUpdates.ai_model = updates.aiModel;
+  if (updates.aiEnabled !== undefined) dbUpdates.aiEnabled = updates.aiEnabled;
+  if (updates.aiProvider !== undefined) dbUpdates.aiProvider = updates.aiProvider;
+  if (updates.aiModel !== undefined) dbUpdates.aiModel = updates.aiModel;
 
   const googleKey = normalizeKey(updates.aiGoogleKey);
-  if (googleKey !== undefined) dbUpdates.ai_google_key = googleKey;
+  if (googleKey !== undefined) dbUpdates.aiGoogleKey = googleKey;
 
   const openaiKey = normalizeKey(updates.aiOpenaiKey);
-  if (openaiKey !== undefined) dbUpdates.ai_openai_key = openaiKey;
+  if (openaiKey !== undefined) dbUpdates.aiOpenaiKey = openaiKey;
 
   const anthropicKey = normalizeKey(updates.aiAnthropicKey);
-  if (anthropicKey !== undefined) dbUpdates.ai_anthropic_key = anthropicKey;
+  if (anthropicKey !== undefined) dbUpdates.aiAnthropicKey = anthropicKey;
 
-  const { error: upsertError } = await supabase
-    .from('organization_settings')
-    .upsert(dbUpdates, { onConflict: 'organization_id' });
-
-  if (upsertError) {
-    return json({ error: upsertError.message }, 500);
+  try {
+    await prisma.organizationSettings.upsert({
+      where: { organizationId: profile.organizationId },
+      create: {
+        organizationId: profile.organizationId,
+        ...dbUpdates,
+      },
+      update: dbUpdates,
+    });
+  } catch (err: any) {
+    return json({ error: err.message }, 500);
   }
 
   return json({ ok: true });

@@ -1,7 +1,7 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { ServerCog, Copy, CheckCircle2, Play, AlertTriangle, RefreshCw, ChevronDown } from 'lucide-react';
 import { useOptionalToast } from '@/context/ToastContext';
-import { supabase } from '@/lib/supabase/client';
+// supabase client removed - uses fetch() for API key creation
 import { SettingsSection } from './SettingsSection';
 
 /**
@@ -50,18 +50,17 @@ export const McpSection: React.FC = () => {
   };
 
   const createApiKeyInline = async (): Promise<string | null> => {
-    if (!supabase) {
-      addToast('Supabase não configurado neste ambiente.', 'error');
-      return null;
-    }
-
     setCreatingKey(true);
     try {
       const name = `MCP ${new Date().toLocaleDateString('pt-BR')}`;
-      const { data, error } = await supabase.rpc('create_api_key', { p_name: name });
-      if (error) throw error;
-      const row = Array.isArray(data) ? data[0] : data;
-      const token = row?.token as string | undefined;
+      const res = await fetch('/api/settings/api-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'create', name }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Erro ao criar chave');
+      const token = json.token as string | undefined;
       if (!token) throw new Error('Resposta inválida ao criar chave');
 
       setApiKey(token);

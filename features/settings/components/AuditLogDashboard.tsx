@@ -22,7 +22,7 @@ import {
   Bell,
   Check
 } from 'lucide-react';
-import { supabase } from '@/lib/supabase/client';
+// supabase client removed - uses fetch() for audit log queries
 import { useAuth } from '@/context/AuthContext';
 
 // Performance: reuse Intl formatter to avoid allocating options objects for every log row.
@@ -128,8 +128,6 @@ export const AuditLogDashboard: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [expandedLogId, setExpandedLogId] = useState<string | null>(null);
 
-  const sb = supabase;
-  
   // Filters
   const [severityFilter, setSeverityFilter] = useState<string>('all');
   const [actionFilter, setActionFilter] = useState<string>('all');
@@ -148,17 +146,9 @@ export const AuditLogDashboard: React.FC = () => {
   const fetchLogs = async () => {
     if (!isAdmin) return;
 
-    if (!sb) {
-      setLogs([]);
-      setStats({ total: 0, critical: 0, warning: 0, info: 0 });
-      setError('Supabase não está configurado neste ambiente.');
-      setLoading(false);
-      return;
-    }
-    
     setLoading(true);
     setError(null);
-    
+
     try {
       // Calculate date filter
       const nowTs = Date.now();
@@ -178,26 +168,19 @@ export const AuditLogDashboard: React.FC = () => {
           break;
       }
 
-      let query = sb
-        .from('audit_logs')
-        .select('*')
-        .gte('created_at', new Date(fromTs).toISOString())
-        .order('created_at', { ascending: false })
-        .limit(100);
+      const params = new URLSearchParams();
+      params.set('from', new Date(fromTs).toISOString());
+      if (severityFilter !== 'all') params.set('severity', severityFilter);
+      if (actionFilter !== 'all') params.set('action', actionFilter);
 
-      if (severityFilter !== 'all') {
-        query = query.eq('severity', severityFilter);
-      }
+      const res = await fetch(`/api/settings/audit-logs?${params.toString()}`);
+      const json = await res.json();
 
-      if (actionFilter !== 'all') {
-        query = query.eq('action', actionFilter);
-      }
+      if (!res.ok) throw new Error(json.error || 'Erro ao carregar logs');
 
-      const { data, error: fetchError } = await query;
+      const data = json.data || [];
 
-      if (fetchError) throw fetchError;
-
-      setLogs(data as AuditLogEntry[] || []);
+      setLogs(data as AuditLogEntry[]);
 
       // Calculate stats
       const allLogs = data || [];

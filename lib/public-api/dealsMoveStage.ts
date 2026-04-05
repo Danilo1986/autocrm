@@ -1,7 +1,7 @@
-import { createStaticAdminClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
 import { normalizeEmail, normalizePhone } from '@/lib/public-api/sanitize';
 import { resolveBoardId } from '@/lib/public-api/resolve';
-import { sanitizeUUID } from '@/lib/supabase/utils';
+import { sanitizeUUID } from '@/lib/utils/uuid';
 
 export type MoveStageTarget =
   | { to_stage_id: string }
@@ -14,35 +14,35 @@ async function resolveStageIdForBoard(opts: {
   toStageId?: string | null;
   toStageLabel?: string | null;
 }) {
-  const sb = createStaticAdminClient();
   const idFromBody = sanitizeUUID(opts.toStageId || null);
   const label = (opts.toStageLabel || '').trim();
 
   if (idFromBody) {
-    const { data, error } = await sb
-      .from('board_stages')
-      .select('id')
-      .eq('organization_id', opts.organizationId)
-      .eq('board_id', opts.boardId)
-      .eq('id', idFromBody)
-      .maybeSingle();
-    if (error) throw error;
-    return (data as any)?.id ? idFromBody : null;
+    const stage = await prisma.boardStage.findFirst({
+      where: {
+        organizationId: opts.organizationId,
+        boardId: opts.boardId,
+        id: idFromBody,
+      },
+      select: { id: true },
+    });
+    return stage?.id ? idFromBody : null;
   }
 
   if (!label) return null;
 
-  const { data, error } = await sb
-    .from('board_stages')
-    .select('id,label')
-    .eq('organization_id', opts.organizationId)
-    .eq('board_id', opts.boardId)
-    .ilike('label', label)
-    .limit(2);
-  if (error) throw error;
-  if (!data || data.length === 0) return null;
-  if (data.length > 1) return '__AMBIGUOUS__';
-  return (data[0] as any).id as string;
+  const stages = await prisma.boardStage.findMany({
+    where: {
+      organizationId: opts.organizationId,
+      boardId: opts.boardId,
+      label: { equals: label, mode: 'insensitive' },
+    },
+    select: { id: true, label: true },
+    take: 2,
+  });
+  if (!stages || stages.length === 0) return null;
+  if (stages.length > 1) return '__AMBIGUOUS__';
+  return stages[0].id;
 }
 
 export async function moveStageByDealId(opts: {
@@ -51,31 +51,31 @@ export async function moveStageByDealId(opts: {
   target: { to_stage_id?: string | null; to_stage_label?: string | null };
   mark?: 'won' | 'lost' | null;
 }) {
-  const sb = createStaticAdminClient();
   const dealId = sanitizeUUID(opts.dealId);
   if (!dealId) return { ok: false as const, status: 422, body: { error: 'Invalid deal id', code: 'VALIDATION_ERROR' } };
 
-  const { data: deal, error: dealError } = await sb
-    .from('deals')
-    .select('id,board_id,stage_id')
-    .eq('organization_id', opts.organizationId)
-    .is('deleted_at', null)
-    .eq('id', dealId)
-    .maybeSingle();
-  if (dealError) return { ok: false as const, status: 500, body: { error: dealError.message, code: 'DB_ERROR' } };
+  const deal = await prisma.deal.findFirst({
+    where: {
+      organizationId: opts.organizationId,
+      deletedAt: null,
+      id: dealId,
+    },
+    select: { id: true, boardId: true, stageId: true },
+  });
   if (!deal) return { ok: false as const, status: 404, body: { error: 'Deal not found', code: 'NOT_FOUND' } };
 
-  const boardId = (deal as any).board_id as string;
-  const { data: boardCfg, error: boardCfgError } = await sb
-    .from('boards')
-    .select('won_stage_id,lost_stage_id')
-    .eq('organization_id', opts.organizationId)
-    .is('deleted_at', null)
-    .eq('id', boardId)
-    .maybeSingle();
-  if (boardCfgError) return { ok: false as const, status: 500, body: { error: boardCfgError.message, code: 'DB_ERROR' } };
-  const wonStageId = sanitizeUUID((boardCfg as any)?.won_stage_id) || null;
-  const lostStageId = sanitizeUUID((boardCfg as any)?.lost_stage_id) || null;
+  const boardId = deal.boardId as string;
+  const boardCfg = await prisma.board.findFirst({
+    where: {
+      organizationId: opts.organizationId,
+      deletedAt: null,
+      id: boardId,
+    },
+    select: { wonStageId: true, lostStageId: true },
+  });
+  const wonStageId = sanitizeUUID(boardCfg?.wonStageId) || null;
+  const lostStageId = sanitizeUUID(boardCfg?.lostStageId) || null;
+
   const stageId = await resolveStageIdForBoard({
     organizationId: opts.organizationId,
     boardId,
@@ -94,29 +94,49 @@ export async function moveStageByDealId(opts: {
     };
   }
 
-  const now = new Date().toISOString();
-  const updates: any = { stage_id: stageId, last_stage_change_date: now, updated_at: now };
+  const now = new Date();
+  const updates: any = { stageId, lastStageChangeDate: now };
   if (opts.mark === 'won' || (wonStageId && stageId === wonStageId)) {
-    updates.is_won = true;
-    updates.is_lost = false;
-    updates.closed_at = now;
-    updates.loss_reason = null;
+    updates.isWon = true;
+    updates.isLost = false;
+    updates.closedAt = now;
+    updates.lossReason = null;
   }
   if (opts.mark === 'lost' || (lostStageId && stageId === lostStageId)) {
-    updates.is_lost = true;
-    updates.is_won = false;
-    updates.closed_at = now;
+    updates.isLost = true;
+    updates.isWon = false;
+    updates.closedAt = now;
   }
-  const { data, error } = await sb
-    .from('deals')
-    .update(updates)
-    .eq('organization_id', opts.organizationId)
-    .eq('id', dealId)
-    .select('id,title,value,board_id,stage_id,contact_id,client_company_id,is_won,is_lost,loss_reason,closed_at,created_at,updated_at')
-    .maybeSingle();
-  if (error) return { ok: false as const, status: 500, body: { error: error.message, code: 'DB_ERROR' } };
-  if (!data) return { ok: false as const, status: 404, body: { error: 'Deal not found', code: 'NOT_FOUND' } };
-  return { ok: true as const, status: 200, body: { data, action: 'moved' } };
+
+  const dealSelect = {
+    id: true, title: true, value: true, boardId: true, stageId: true,
+    contactId: true, clientCompanyId: true, isWon: true, isLost: true,
+    lossReason: true, closedAt: true, createdAt: true, updatedAt: true,
+  };
+
+  const data = await prisma.deal.update({
+    where: { id: dealId },
+    data: updates,
+    select: dealSelect,
+  });
+
+  const snakeData = {
+    id: data.id,
+    title: data.title,
+    value: Number(data.value ?? 0),
+    board_id: data.boardId,
+    stage_id: data.stageId,
+    contact_id: data.contactId,
+    client_company_id: data.clientCompanyId ?? null,
+    is_won: !!data.isWon,
+    is_lost: !!data.isLost,
+    loss_reason: data.lossReason ?? null,
+    closed_at: data.closedAt ?? null,
+    created_at: data.createdAt,
+    updated_at: data.updatedAt,
+  };
+
+  return { ok: true as const, status: 200, body: { data: snakeData, action: 'moved' } };
 }
 
 export async function moveStageByIdentity(opts: {
@@ -137,50 +157,56 @@ export async function moveStageByIdentity(opts: {
   const email = normalizeEmail(opts.email);
   if (!phone && !email) return { ok: false as const, status: 422, body: { error: 'Invalid phone/email', code: 'VALIDATION_ERROR' } };
 
-  const sb = createStaticAdminClient();
-  const { data: boardCfg, error: boardCfgError } = await sb
-    .from('boards')
-    .select('won_stage_id,lost_stage_id')
-    .eq('organization_id', opts.organizationId)
-    .is('deleted_at', null)
-    .eq('id', boardId)
-    .maybeSingle();
-  if (boardCfgError) return { ok: false as const, status: 500, body: { error: boardCfgError.message, code: 'DB_ERROR' } };
-  const wonStageId = sanitizeUUID((boardCfg as any)?.won_stage_id) || null;
-  const lostStageId = sanitizeUUID((boardCfg as any)?.lost_stage_id) || null;
+  const boardCfg = await prisma.board.findFirst({
+    where: {
+      organizationId: opts.organizationId,
+      deletedAt: null,
+      id: boardId,
+    },
+    select: { wonStageId: true, lostStageId: true },
+  });
+  const wonStageId = sanitizeUUID(boardCfg?.wonStageId) || null;
+  const lostStageId = sanitizeUUID(boardCfg?.lostStageId) || null;
 
-  let contactsQuery = sb
-    .from('contacts')
-    .select('id')
-    .eq('organization_id', opts.organizationId)
-    .is('deleted_at', null);
-  if (phone && email) contactsQuery = contactsQuery.or(`phone.eq.${phone},email.eq.${email}`);
-  else if (phone) contactsQuery = contactsQuery.eq('phone', phone);
-  else contactsQuery = contactsQuery.eq('email', email);
+  const contactWhere: any = {
+    organizationId: opts.organizationId,
+    deletedAt: null,
+  };
+  if (phone && email) {
+    contactWhere.OR = [{ phone }, { email }];
+  } else if (phone) {
+    contactWhere.phone = phone;
+  } else {
+    contactWhere.email = email;
+  }
 
-  const { data: contacts, error: contactsError } = await contactsQuery.limit(20);
-  if (contactsError) return { ok: false as const, status: 500, body: { error: contactsError.message, code: 'DB_ERROR' } };
-  const contactIds = (contacts || []).map((c: any) => c.id).filter(Boolean);
+  const contacts = await prisma.contact.findMany({
+    where: contactWhere,
+    select: { id: true },
+    take: 20,
+  });
+  const contactIds = contacts.map(c => c.id).filter(Boolean);
   if (contactIds.length === 0) return { ok: false as const, status: 404, body: { error: 'Deal not found for this identity', code: 'NOT_FOUND' } };
 
-  const { data: deals, error: dealsError } = await sb
-    .from('deals')
-    .select('id')
-    .eq('organization_id', opts.organizationId)
-    .is('deleted_at', null)
-    .eq('board_id', boardId)
-    .eq('is_won', false)
-    .eq('is_lost', false)
-    .in('contact_id', contactIds)
-    .order('updated_at', { ascending: false })
-    .limit(2);
-  if (dealsError) return { ok: false as const, status: 500, body: { error: dealsError.message, code: 'DB_ERROR' } };
+  const deals = await prisma.deal.findMany({
+    where: {
+      organizationId: opts.organizationId,
+      deletedAt: null,
+      boardId,
+      isWon: false,
+      isLost: false,
+      contactId: { in: contactIds },
+    },
+    select: { id: true },
+    orderBy: { updatedAt: 'desc' },
+    take: 2,
+  });
   if (!deals || deals.length === 0) return { ok: false as const, status: 404, body: { error: 'Deal not found for this identity', code: 'NOT_FOUND' } };
   if (deals.length > 1) {
     return { ok: false as const, status: 409, body: { error: 'More than one open deal found for this identity in this board', code: 'AMBIGUOUS_MATCH' } };
   }
 
-  const dealId = (deals[0] as any).id as string;
+  const dealId = deals[0].id;
   const stageId = await resolveStageIdForBoard({
     organizationId: opts.organizationId,
     boardId,
@@ -198,28 +224,47 @@ export async function moveStageByIdentity(opts: {
     };
   }
 
-  const now = new Date().toISOString();
-  const updates: any = { stage_id: stageId, last_stage_change_date: now, updated_at: now };
+  const now = new Date();
+  const updates: any = { stageId, lastStageChangeDate: now };
   if (opts.mark === 'won' || (wonStageId && stageId === wonStageId)) {
-    updates.is_won = true;
-    updates.is_lost = false;
-    updates.closed_at = now;
-    updates.loss_reason = null;
+    updates.isWon = true;
+    updates.isLost = false;
+    updates.closedAt = now;
+    updates.lossReason = null;
   }
   if (opts.mark === 'lost' || (lostStageId && stageId === lostStageId)) {
-    updates.is_lost = true;
-    updates.is_won = false;
-    updates.closed_at = now;
+    updates.isLost = true;
+    updates.isWon = false;
+    updates.closedAt = now;
   }
-  const { data: updated, error: updateError } = await sb
-    .from('deals')
-    .update(updates)
-    .eq('organization_id', opts.organizationId)
-    .eq('id', dealId)
-    .select('id,title,value,board_id,stage_id,contact_id,client_company_id,is_won,is_lost,loss_reason,closed_at,created_at,updated_at')
-    .maybeSingle();
-  if (updateError) return { ok: false as const, status: 500, body: { error: updateError.message, code: 'DB_ERROR' } };
-  if (!updated) return { ok: false as const, status: 404, body: { error: 'Deal not found', code: 'NOT_FOUND' } };
-  return { ok: true as const, status: 200, body: { data: updated, action: 'moved' } };
-}
 
+  const dealSelect = {
+    id: true, title: true, value: true, boardId: true, stageId: true,
+    contactId: true, clientCompanyId: true, isWon: true, isLost: true,
+    lossReason: true, closedAt: true, createdAt: true, updatedAt: true,
+  };
+
+  const updated = await prisma.deal.update({
+    where: { id: dealId },
+    data: updates,
+    select: dealSelect,
+  });
+
+  const snakeData = {
+    id: updated.id,
+    title: updated.title,
+    value: Number(updated.value ?? 0),
+    board_id: updated.boardId,
+    stage_id: updated.stageId,
+    contact_id: updated.contactId,
+    client_company_id: updated.clientCompanyId ?? null,
+    is_won: !!updated.isWon,
+    is_lost: !!updated.isLost,
+    loss_reason: updated.lossReason ?? null,
+    closed_at: updated.closedAt ?? null,
+    created_at: updated.createdAt,
+    updated_at: updated.updatedAt,
+  };
+
+  return { ok: true as const, status: 200, body: { data: snakeData, action: 'moved' } };
+}

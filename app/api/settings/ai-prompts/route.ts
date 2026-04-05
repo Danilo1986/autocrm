@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
+import { auth } from '@/lib/auth/auth';
 import { isAllowedOrigin } from '@/lib/security/sameOrigin';
 
 function json<T>(body: T, status = 200): Response {
@@ -9,40 +10,28 @@ function json<T>(body: T, status = 200): Response {
   });
 }
 
-/**
- * Handler HTTP `GET` deste endpoint (Next.js Route Handler).
- * @returns {Promise<Response>} Retorna um valor do tipo `Promise<Response>`.
- */
 export async function GET() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const session = await auth();
+  if (!session?.user?.id) return json({ error: 'Unauthorized' }, 401);
 
-  if (!user) return json({ error: 'Unauthorized' }, 401);
+  const me = await prisma.profile.findUnique({
+    where: { id: session.user.id },
+    select: { id: true, role: true, organizationId: true },
+  });
 
-  const { data: me, error: meError } = await supabase
-    .from('profiles')
-    .select('id, role, organization_id')
-    .eq('id', user.id)
-    .single();
-
-  if (meError || !me?.organization_id) return json({ error: 'Profile not found' }, 404);
+  if (!me?.organizationId) return json({ error: 'Profile not found' }, 404);
   if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
 
-  const { data, error } = await supabase
-    .from('ai_prompt_templates')
-    .select('key, version, is_active, updated_at')
-    .eq('organization_id', me.organization_id)
-    .order('updated_at', { ascending: false });
+  const data = await prisma.aiPromptTemplate.findMany({
+    where: { organizationId: me.organizationId },
+    select: { key: true, version: true, isActive: true, updatedAt: true },
+    orderBy: { updatedAt: 'desc' },
+  });
 
-  if (error) return json({ error: error.message }, 500);
-
-  // Map: key -> active version metadata (if any)
-  const activeByKey: Record<string, { version: number; updatedAt: string }> = {};
-  for (const row of data || []) {
-    if (row.is_active && !activeByKey[row.key]) {
-      activeByKey[row.key] = { version: row.version, updatedAt: row.updated_at };
+  const activeByKey: Record<string, { version: number; updatedAt: Date }> = {};
+  for (const row of data) {
+    if (row.isActive && !activeByKey[row.key]) {
+      activeByKey[row.key] = { version: row.version, updatedAt: row.updatedAt };
     }
   }
 
@@ -56,73 +45,61 @@ const UpsertPromptSchema = z
   })
   .strict();
 
-/**
- * Handler HTTP `POST` deste endpoint (Next.js Route Handler).
- *
- * @param {Request} req - Objeto da requisição.
- * @returns {Promise<Response>} Retorna um valor do tipo `Promise<Response>`.
- */
 export async function POST(req: Request) {
   if (!isAllowedOrigin(req)) return json({ error: 'Forbidden' }, 403);
 
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) return json({ error: 'Unauthorized' }, 401);
+  const session = await auth();
+  if (!session?.user?.id) return json({ error: 'Unauthorized' }, 401);
 
   const rawBody = await req.json().catch(() => null);
   const parsed = UpsertPromptSchema.safeParse(rawBody);
   if (!parsed.success) return json({ error: 'Invalid payload', details: parsed.error.flatten() }, 400);
 
-  const { data: me, error: meError } = await supabase
-    .from('profiles')
-    .select('id, role, organization_id')
-    .eq('id', user.id)
-    .single();
+  const me = await prisma.profile.findUnique({
+    where: { id: session.user.id },
+    select: { id: true, role: true, organizationId: true },
+  });
 
-  if (meError || !me?.organization_id) return json({ error: 'Profile not found' }, 404);
+  if (!me?.organizationId) return json({ error: 'Profile not found' }, 404);
   if (me.role !== 'admin') return json({ error: 'Forbidden' }, 403);
 
   const { key, content } = parsed.data;
 
-  // Determine next version
-  const { data: existing, error: existingError } = await supabase
-    .from('ai_prompt_templates')
-    .select('version')
-    .eq('organization_id', me.organization_id)
-    .eq('key', key)
-    .order('version', { ascending: false })
-    .limit(1);
+  try {
+    // Determine next version
+    const existing = await prisma.aiPromptTemplate.findFirst({
+      where: { organizationId: me.organizationId, key },
+      select: { version: true },
+      orderBy: { version: 'desc' },
+    });
 
-  if (existingError) return json({ error: existingError.message }, 500);
+    const lastVersion = existing?.version ?? 0;
+    const nextVersion = lastVersion + 1;
 
-  const lastVersion = existing && existing.length > 0 ? (existing[0].version as number) : 0;
-  const nextVersion = lastVersion + 1;
+    // Deactivate previous active version
+    await prisma.aiPromptTemplate.updateMany({
+      where: {
+        organizationId: me.organizationId,
+        key,
+        isActive: true,
+      },
+      data: { isActive: false },
+    });
 
-  // Deactivate previous active version for the key (keep history)
-  const { error: deactivateError } = await supabase
-    .from('ai_prompt_templates')
-    .update({ is_active: false, updated_at: new Date().toISOString() })
-    .eq('organization_id', me.organization_id)
-    .eq('key', key)
-    .eq('is_active', true);
+    // Create new version
+    await prisma.aiPromptTemplate.create({
+      data: {
+        organizationId: me.organizationId,
+        key,
+        version: nextVersion,
+        content,
+        isActive: true,
+        createdBy: me.id,
+      },
+    });
 
-  if (deactivateError) return json({ error: deactivateError.message }, 500);
-
-  const { error: insertError } = await supabase.from('ai_prompt_templates').insert({
-    organization_id: me.organization_id,
-    key,
-    version: nextVersion,
-    content,
-    is_active: true,
-    created_by: me.id,
-    updated_at: new Date().toISOString(),
-  });
-
-  if (insertError) return json({ error: insertError.message }, 500);
-
-  return json({ ok: true, key, version: nextVersion });
+    return json({ ok: true, key, version: nextVersion });
+  } catch (err: any) {
+    return json({ error: err.message }, 500);
+  }
 }
-

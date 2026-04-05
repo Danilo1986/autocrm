@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { authPublicApi } from '@/lib/public-api/auth';
-import { createStaticAdminClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
 import { decodeOffsetCursor, encodeOffsetCursor, parseLimit } from '@/lib/public-api/cursor';
 import { resolveBoardIdFromKey, resolveFirstStageId } from '@/lib/public-api/resolve';
 import { normalizeEmail, normalizePhone, normalizeText } from '@/lib/public-api/sanitize';
-import { isValidUUID, sanitizeUUID } from '@/lib/supabase/utils';
+import { isValidUUID, sanitizeUUID } from '@/lib/utils/uuid';
 
 export const runtime = 'nodejs';
 
@@ -28,6 +28,30 @@ const DealCreateSchema = z.object({
   client_company_id: z.string().uuid().optional(),
 }).strict();
 
+function toSnakeCase(d: any) {
+  return {
+    id: d.id,
+    title: d.title,
+    value: Number(d.value ?? 0),
+    board_id: d.boardId,
+    stage_id: d.stageId,
+    contact_id: d.contactId,
+    client_company_id: d.clientCompanyId ?? null,
+    is_won: !!d.isWon,
+    is_lost: !!d.isLost,
+    loss_reason: d.lossReason ?? null,
+    closed_at: d.closedAt ?? null,
+    created_at: d.createdAt,
+    updated_at: d.updatedAt,
+  };
+}
+
+const dealSelect = {
+  id: true, title: true, value: true, boardId: true, stageId: true,
+  contactId: true, clientCompanyId: true, isWon: true, isLost: true,
+  lossReason: true, closedAt: true, createdAt: true, updatedAt: true,
+};
+
 export async function GET(request: Request) {
   const auth = await authPublicApi(request);
   if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
@@ -39,70 +63,60 @@ export async function GET(request: Request) {
   const stageId = sanitizeUUID(url.searchParams.get('stage_id'));
   const contactId = sanitizeUUID(url.searchParams.get('contact_id'));
   const clientCompanyId = sanitizeUUID(url.searchParams.get('client_company_id'));
-  const status = (url.searchParams.get('status') || '').trim(); // open|won|lost
+  const status = (url.searchParams.get('status') || '').trim();
   const updatedAfter = (url.searchParams.get('updated_after') || '').trim();
   const limit = parseLimit(url.searchParams.get('limit'));
   const offset = decodeOffsetCursor(url.searchParams.get('cursor'));
 
-  const sb = createStaticAdminClient();
+  try {
+    let resolvedBoardId = boardId;
+    if (!resolvedBoardId && boardKey) {
+      resolvedBoardId = await resolveBoardIdFromKey({ organizationId: auth.organizationId, boardKey });
+    }
 
-  let resolvedBoardId = boardId;
-  if (!resolvedBoardId && boardKey) {
-    resolvedBoardId = await resolveBoardIdFromKey({ organizationId: auth.organizationId, boardKey });
+    const where: any = {
+      organizationId: auth.organizationId,
+      deletedAt: null,
+    };
+
+    if (resolvedBoardId) where.boardId = resolvedBoardId;
+    if (stageId) where.stageId = stageId;
+    if (contactId) where.contactId = contactId;
+    if (clientCompanyId) where.clientCompanyId = clientCompanyId;
+    if (updatedAfter) where.updatedAt = { gte: new Date(updatedAfter) };
+    if (q) where.title = { contains: q, mode: 'insensitive' };
+
+    if (status === 'open') { where.isWon = false; where.isLost = false; }
+    if (status === 'won') where.isWon = true;
+    if (status === 'lost') where.isLost = true;
+
+    const [data, total] = await Promise.all([
+      prisma.deal.findMany({
+        where,
+        select: dealSelect,
+        orderBy: { updatedAt: 'desc' },
+        skip: offset,
+        take: limit,
+      }),
+      prisma.deal.count({ where }),
+    ]);
+
+    const nextOffset = offset + limit;
+    const nextCursor = nextOffset < total ? encodeOffsetCursor(nextOffset) : null;
+
+    return NextResponse.json({
+      data: data.map(toSnakeCase),
+      nextCursor,
+    });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
   }
-
-  let query = sb
-    .from('deals')
-    .select('id,title,value,board_id,stage_id,contact_id,client_company_id,is_won,is_lost,loss_reason,closed_at,created_at,updated_at', { count: 'exact' })
-    .eq('organization_id', auth.organizationId)
-    .is('deleted_at', null)
-    .order('updated_at', { ascending: false });
-
-  if (resolvedBoardId) query = query.eq('board_id', resolvedBoardId);
-  if (stageId) query = query.eq('stage_id', stageId);
-  if (contactId) query = query.eq('contact_id', contactId);
-  if (clientCompanyId) query = query.eq('client_company_id', clientCompanyId);
-  if (updatedAfter) query = query.gte('updated_at', updatedAfter);
-  if (q) query = query.ilike('title', `%${q}%`);
-
-  if (status === 'open') query = query.eq('is_won', false).eq('is_lost', false);
-  if (status === 'won') query = query.eq('is_won', true);
-  if (status === 'lost') query = query.eq('is_lost', true);
-
-  const from = offset;
-  const to = offset + limit - 1;
-  const { data, count, error } = await query.range(from, to);
-  if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
-
-  const total = count ?? 0;
-  const nextOffset = to + 1;
-  const nextCursor = nextOffset < total ? encodeOffsetCursor(nextOffset) : null;
-
-  return NextResponse.json({
-    data: (data || []).map((d: any) => ({
-      id: d.id,
-      title: d.title,
-      value: Number(d.value ?? 0),
-      board_id: d.board_id,
-      stage_id: d.stage_id,
-      contact_id: d.contact_id,
-      client_company_id: d.client_company_id ?? null,
-      is_won: !!d.is_won,
-      is_lost: !!d.is_lost,
-      loss_reason: d.loss_reason ?? null,
-      closed_at: d.closed_at ?? null,
-      created_at: d.created_at,
-      updated_at: d.updated_at,
-    })),
-    nextCursor,
-  });
 }
 
 async function upsertContactForDeal(opts: {
   organizationId: string;
   contact: z.infer<typeof ContactInlineSchema>;
 }) {
-  const sb = createStaticAdminClient();
   const email = normalizeEmail(opts.contact.email);
   const phone = normalizePhone(opts.contact.phone);
   const name = normalizeText(opts.contact.name);
@@ -110,46 +124,48 @@ async function upsertContactForDeal(opts: {
     throw new Error('Provide contact.email or contact.phone');
   }
 
-  let lookup = sb
-    .from('contacts')
-    .select('id')
-    .eq('organization_id', opts.organizationId)
-    .is('deleted_at', null);
-  if (email && phone) lookup = lookup.or(`email.eq.${email},phone.eq.${phone}`);
-  else if (email) lookup = lookup.eq('email', email);
-  else lookup = lookup.eq('phone', phone);
+  const lookupWhere: any = {
+    organizationId: opts.organizationId,
+    deletedAt: null,
+  };
+  if (email && phone) {
+    lookupWhere.OR = [{ email }, { phone }];
+  } else if (email) {
+    lookupWhere.email = email;
+  } else {
+    lookupWhere.phone = phone;
+  }
 
-  const existing = await lookup.maybeSingle();
-  if (existing.error) throw existing.error;
+  const existing = await prisma.contact.findFirst({
+    where: lookupWhere,
+    select: { id: true },
+  });
 
-  const now = new Date().toISOString();
   const base: any = {
-    organization_id: opts.organizationId,
     email,
     phone,
     role: normalizeText(opts.contact.role),
-    client_company_id: sanitizeUUID(opts.contact.client_company_id) || null,
-    updated_at: now,
+    clientCompanyId: sanitizeUUID(opts.contact.client_company_id) || null,
   };
 
-  if (existing.data?.id) {
+  if (existing?.id) {
     if (name) base.name = name;
-    const { data, error } = await sb.from('contacts').update(base).eq('id', existing.data.id).select('id').single();
-    if (error) throw error;
-    return data.id as string;
+    await prisma.contact.update({ where: { id: existing.id }, data: base });
+    return existing.id;
   }
 
   if (!name) throw new Error('contact.name is required to create a new contact');
-  const insert = {
-    ...base,
-    name,
-    created_at: now,
-    status: 'ACTIVE',
-    stage: 'LEAD',
-  };
-  const { data, error } = await sb.from('contacts').insert(insert).select('id').single();
-  if (error) throw error;
-  return data.id as string;
+  const created = await prisma.contact.create({
+    data: {
+      ...base,
+      organizationId: opts.organizationId,
+      name,
+      status: 'ACTIVE',
+      stage: 'LEAD',
+    },
+    select: { id: true },
+  });
+  return created.id;
 }
 
 export async function POST(request: Request) {
@@ -162,59 +178,53 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid payload', code: 'VALIDATION_ERROR' }, { status: 422 });
   }
 
-  const sb = createStaticAdminClient();
-
-  let boardId = sanitizeUUID(parsed.data.board_id);
-  if (!boardId && parsed.data.board_key) {
-    boardId = await resolveBoardIdFromKey({ organizationId: auth.organizationId, boardKey: parsed.data.board_key });
-  }
-  if (!boardId) {
-    return NextResponse.json({ error: 'Provide board_id or board_key', code: 'VALIDATION_ERROR' }, { status: 422 });
-  }
-
-  let stageId = sanitizeUUID(parsed.data.stage_id);
-  if (!stageId) {
-    stageId = await resolveFirstStageId({ organizationId: auth.organizationId, boardId });
-  }
-  if (!stageId) {
-    return NextResponse.json({ error: 'No stages found for board', code: 'VALIDATION_ERROR' }, { status: 422 });
-  }
-
-  let contactId = sanitizeUUID(parsed.data.contact_id);
-  if (!contactId && parsed.data.contact) {
-    try {
-      contactId = await upsertContactForDeal({ organizationId: auth.organizationId, contact: parsed.data.contact });
-    } catch (e: any) {
-      return NextResponse.json({ error: e?.message || 'Invalid contact', code: 'VALIDATION_ERROR' }, { status: 422 });
+  try {
+    let boardId = sanitizeUUID(parsed.data.board_id);
+    if (!boardId && parsed.data.board_key) {
+      boardId = await resolveBoardIdFromKey({ organizationId: auth.organizationId, boardKey: parsed.data.board_key });
     }
+    if (!boardId) {
+      return NextResponse.json({ error: 'Provide board_id or board_key', code: 'VALIDATION_ERROR' }, { status: 422 });
+    }
+
+    let stageId = sanitizeUUID(parsed.data.stage_id);
+    if (!stageId) {
+      stageId = await resolveFirstStageId({ organizationId: auth.organizationId, boardId });
+    }
+    if (!stageId) {
+      return NextResponse.json({ error: 'No stages found for board', code: 'VALIDATION_ERROR' }, { status: 422 });
+    }
+
+    let contactId = sanitizeUUID(parsed.data.contact_id);
+    if (!contactId && parsed.data.contact) {
+      try {
+        contactId = await upsertContactForDeal({ organizationId: auth.organizationId, contact: parsed.data.contact });
+      } catch (e: any) {
+        return NextResponse.json({ error: e?.message || 'Invalid contact', code: 'VALIDATION_ERROR' }, { status: 422 });
+      }
+    }
+    if (!contactId) {
+      return NextResponse.json({ error: 'Provide contact_id or contact', code: 'VALIDATION_ERROR' }, { status: 422 });
+    }
+
+    const value = Number(parsed.data.value ?? 0);
+    const data = await prisma.deal.create({
+      data: {
+        organizationId: auth.organizationId,
+        title: parsed.data.title.trim(),
+        value,
+        boardId,
+        stageId,
+        contactId,
+        clientCompanyId: sanitizeUUID(parsed.data.client_company_id) || null,
+        isWon: false,
+        isLost: false,
+      },
+      select: dealSelect,
+    });
+
+    return NextResponse.json({ data: toSnakeCase(data), action: 'created' }, { status: 201 });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
   }
-  if (!contactId) {
-    return NextResponse.json({ error: 'Provide contact_id or contact', code: 'VALIDATION_ERROR' }, { status: 422 });
-  }
-
-  const now = new Date().toISOString();
-  const value = Number(parsed.data.value ?? 0);
-  const insertPayload: any = {
-    organization_id: auth.organizationId,
-    title: parsed.data.title.trim(),
-    value,
-    board_id: boardId,
-    stage_id: stageId,
-    contact_id: contactId,
-    client_company_id: sanitizeUUID(parsed.data.client_company_id) || null,
-    is_won: false,
-    is_lost: false,
-    created_at: now,
-    updated_at: now,
-  };
-
-  const { data, error } = await sb
-    .from('deals')
-    .insert(insertPayload)
-    .select('id,title,value,board_id,stage_id,contact_id,client_company_id,is_won,is_lost,loss_reason,closed_at,created_at,updated_at')
-    .single();
-  if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
-
-  return NextResponse.json({ data, action: 'created' }, { status: 201 });
 }
-

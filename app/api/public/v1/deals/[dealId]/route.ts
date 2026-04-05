@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { authPublicApi } from '@/lib/public-api/auth';
-import { createStaticAdminClient } from '@/lib/supabase/server';
-import { isValidUUID, sanitizeUUID } from '@/lib/supabase/utils';
+import { prisma } from '@/lib/db/prisma';
+import { isValidUUID, sanitizeUUID } from '@/lib/utils/uuid';
 import { normalizeText } from '@/lib/public-api/sanitize';
 
 export const runtime = 'nodejs';
@@ -15,6 +15,30 @@ const DealPatchSchema = z.object({
   loss_reason: z.string().nullable().optional(),
 }).strict();
 
+function toSnakeCase(d: any) {
+  return {
+    id: d.id,
+    title: d.title,
+    value: Number(d.value ?? 0),
+    board_id: d.boardId,
+    stage_id: d.stageId,
+    contact_id: d.contactId,
+    client_company_id: d.clientCompanyId ?? null,
+    is_won: !!d.isWon,
+    is_lost: !!d.isLost,
+    loss_reason: d.lossReason ?? null,
+    closed_at: d.closedAt ?? null,
+    created_at: d.createdAt,
+    updated_at: d.updatedAt,
+  };
+}
+
+const dealSelect = {
+  id: true, title: true, value: true, boardId: true, stageId: true,
+  contactId: true, clientCompanyId: true, isWon: true, isLost: true,
+  lossReason: true, closedAt: true, createdAt: true, updatedAt: true,
+};
+
 export async function GET(request: Request, ctx: { params: Promise<{ dealId: string }> }) {
   const auth = await authPublicApi(request);
   if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
@@ -24,19 +48,22 @@ export async function GET(request: Request, ctx: { params: Promise<{ dealId: str
     return NextResponse.json({ error: 'Invalid deal id', code: 'VALIDATION_ERROR' }, { status: 422 });
   }
 
-  const sb = createStaticAdminClient();
-  const { data, error } = await sb
-    .from('deals')
-    .select('id,title,value,board_id,stage_id,contact_id,client_company_id,is_won,is_lost,loss_reason,closed_at,created_at,updated_at')
-    .eq('organization_id', auth.organizationId)
-    .is('deleted_at', null)
-    .eq('id', dealId)
-    .maybeSingle();
+  try {
+    const data = await prisma.deal.findFirst({
+      where: {
+        organizationId: auth.organizationId,
+        deletedAt: null,
+        id: dealId,
+      },
+      select: dealSelect,
+    });
 
-  if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
-  if (!data) return NextResponse.json({ error: 'Deal not found', code: 'NOT_FOUND' }, { status: 404 });
+    if (!data) return NextResponse.json({ error: 'Deal not found', code: 'NOT_FOUND' }, { status: 404 });
 
-  return NextResponse.json({ data });
+    return NextResponse.json({ data: toSnakeCase(data) });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
+  }
 }
 
 export async function PATCH(request: Request, ctx: { params: Promise<{ dealId: string }> }) {
@@ -57,23 +84,25 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ dealId: s
   const updates: any = {};
   if (parsed.data.title !== undefined) updates.title = normalizeText(parsed.data.title);
   if (parsed.data.value !== undefined) updates.value = Number(parsed.data.value ?? 0);
-  if (parsed.data.contact_id !== undefined) updates.contact_id = sanitizeUUID(parsed.data.contact_id);
-  if (parsed.data.client_company_id !== undefined) updates.client_company_id = parsed.data.client_company_id === null ? null : (sanitizeUUID(parsed.data.client_company_id) || null);
-  if (parsed.data.loss_reason !== undefined) updates.loss_reason = parsed.data.loss_reason === null ? null : normalizeText(parsed.data.loss_reason);
-  updates.updated_at = new Date().toISOString();
+  if (parsed.data.contact_id !== undefined) updates.contactId = sanitizeUUID(parsed.data.contact_id);
+  if (parsed.data.client_company_id !== undefined) updates.clientCompanyId = parsed.data.client_company_id === null ? null : (sanitizeUUID(parsed.data.client_company_id) || null);
+  if (parsed.data.loss_reason !== undefined) updates.lossReason = parsed.data.loss_reason === null ? null : normalizeText(parsed.data.loss_reason);
 
-  const sb = createStaticAdminClient();
-  const { data, error } = await sb
-    .from('deals')
-    .update(updates)
-    .eq('organization_id', auth.organizationId)
-    .eq('id', dealId)
-    .select('id,title,value,board_id,stage_id,contact_id,client_company_id,is_won,is_lost,loss_reason,closed_at,created_at,updated_at')
-    .maybeSingle();
+  try {
+    const existing = await prisma.deal.findFirst({
+      where: { organizationId: auth.organizationId, id: dealId },
+      select: { id: true },
+    });
+    if (!existing) return NextResponse.json({ error: 'Deal not found', code: 'NOT_FOUND' }, { status: 404 });
 
-  if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
-  if (!data) return NextResponse.json({ error: 'Deal not found', code: 'NOT_FOUND' }, { status: 404 });
+    const data = await prisma.deal.update({
+      where: { id: dealId },
+      data: updates,
+      select: dealSelect,
+    });
 
-  return NextResponse.json({ data });
+    return NextResponse.json({ data: toSnakeCase(data) });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
+  }
 }
-

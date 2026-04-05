@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { createStaticAdminClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
 import { isAllowedOrigin } from '@/lib/security/sameOrigin';
 
 function json<T>(body: T, status = 200): Response {
@@ -17,14 +17,7 @@ const SetupSchema = z
   })
   .strict();
 
-/**
- * Handler HTTP `POST` deste endpoint (Next.js Route Handler).
- *
- * @param {Request} req - Objeto da requisição.
- * @returns {Promise<Response>} Retorna um valor do tipo `Promise<Response>`.
- */
 export async function POST(req: Request) {
-  // Setup inicial tem efeito colateral; bloqueia cross-site.
   if (!isAllowedOrigin(req)) return json({ error: 'Forbidden' }, 403);
 
   const raw = await req.json().catch(() => null);
@@ -35,26 +28,23 @@ export async function POST(req: Request) {
 
   const { companyName, email, password } = parsed.data;
 
-  const admin = createStaticAdminClient();
+  // Check if instance is already initialized (any organization exists)
+  const orgCount = await prisma.organization.count();
+  if (orgCount > 0) return json({ error: 'Instance already initialized' }, 403);
 
-  // Só permite setup se ainda não inicializado.
-  const { data: isInitialized, error: initError } = await admin.rpc('is_instance_initialized');
-  if (initError) return json({ error: initError.message }, 500);
-  if (isInitialized) return json({ error: 'Instance already initialized' }, 403);
+  let organization: { id: string; name: string };
+  try {
+    organization = await prisma.organization.create({
+      data: { name: companyName },
+      select: { id: true, name: true },
+    });
+  } catch (orgError: any) {
+    return json({ error: orgError.message }, 500);
+  }
 
-  const { data: organization, error: orgError } = await admin
-    .from('organizations')
-    .insert({ name: companyName })
-    // Performance: only the id/name are used downstream; keep payload minimal.
-    .select('id, name')
-    .single();
-
-  if (orgError) return json({ error: orgError.message }, 500);
-
-  // Create user via Prisma directly instead of Supabase auth
+  // Create user
   const { default: bcrypt } = await import('bcryptjs');
   const hashedPassword = await bcrypt.hash(password, 12);
-  const { prisma } = await import('@/lib/db/prisma');
   const { randomUUID } = await import('crypto');
 
   let userId: string;
@@ -68,27 +58,34 @@ export async function POST(req: Request) {
     });
     userId = user.id;
   } catch (userError: any) {
-    await admin.from('organizations').delete().eq('id', organization.id);
+    await prisma.organization.delete({ where: { id: organization.id } }).catch(() => {});
     return json({ error: userError.message || 'Failed to create user' }, 400);
   }
+
   const displayName = email.split('@')[0];
 
-  const { error: profileError } = await admin.from('profiles').upsert(
-    {
-      id: userId,
-      email,
-      name: displayName,
-      first_name: displayName,
-      organization_id: organization.id,
-      role: 'admin',
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: 'id' }
-  );
-
-  if (profileError) {
+  try {
+    await prisma.profile.upsert({
+      where: { id: userId },
+      create: {
+        id: userId,
+        email,
+        name: displayName,
+        firstName: displayName,
+        organizationId: organization.id,
+        role: 'admin',
+      },
+      update: {
+        email,
+        name: displayName,
+        firstName: displayName,
+        organizationId: organization.id,
+        role: 'admin',
+      },
+    });
+  } catch (profileError: any) {
     await prisma.user.delete({ where: { id: userId } }).catch(() => {});
-    await admin.from('organizations').delete().eq('id', organization.id);
+    await prisma.organization.delete({ where: { id: organization.id } }).catch(() => {});
     return json({ error: profileError.message }, 400);
   }
 

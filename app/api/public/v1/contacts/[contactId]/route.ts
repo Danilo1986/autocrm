@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { authPublicApi } from '@/lib/public-api/auth';
-import { createStaticAdminClient } from '@/lib/supabase/server';
-import { isValidUUID } from '@/lib/supabase/utils';
+import { prisma } from '@/lib/db/prisma';
+import { isValidUUID, sanitizeUUID } from '@/lib/utils/uuid';
 import { normalizeEmail, normalizePhone, normalizeText } from '@/lib/public-api/sanitize';
-import { sanitizeUUID } from '@/lib/supabase/utils';
 
 export const runtime = 'nodejs';
 
@@ -43,6 +42,37 @@ function toIsoTimestamp(v: string | undefined | null) {
   return d.toISOString();
 }
 
+function toSnakeCase(c: any) {
+  return {
+    id: c.id,
+    name: c.name,
+    email: c.email ?? null,
+    phone: c.phone ?? null,
+    role: c.role ?? null,
+    company_name: c.companyName ?? null,
+    client_company_id: c.clientCompanyId ?? null,
+    avatar: c.avatar ?? null,
+    status: c.status ?? null,
+    stage: c.stage ?? null,
+    source: c.source ?? null,
+    notes: c.notes ?? null,
+    birth_date: c.birthDate ?? null,
+    last_interaction: c.lastInteraction ?? null,
+    last_purchase_date: c.lastPurchaseDate ?? null,
+    total_value: c.totalValue != null ? Number(c.totalValue) : null,
+    created_at: c.createdAt,
+    updated_at: c.updatedAt,
+  };
+}
+
+const contactSelect = {
+  id: true, name: true, email: true, phone: true, role: true,
+  companyName: true, clientCompanyId: true, avatar: true, notes: true,
+  status: true, stage: true, source: true, birthDate: true,
+  lastInteraction: true, lastPurchaseDate: true, totalValue: true,
+  createdAt: true, updatedAt: true,
+};
+
 export async function GET(request: Request, ctx: { params: Promise<{ contactId: string }> }) {
   const auth = await authPublicApi(request);
   if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
@@ -52,19 +82,22 @@ export async function GET(request: Request, ctx: { params: Promise<{ contactId: 
     return NextResponse.json({ error: 'Invalid contact id', code: 'VALIDATION_ERROR' }, { status: 422 });
   }
 
-  const sb = createStaticAdminClient();
-  const { data, error } = await sb
-    .from('contacts')
-    .select('id,name,email,phone,role,company_name,client_company_id,avatar,notes,status,stage,source,birth_date,last_interaction,last_purchase_date,total_value,created_at,updated_at')
-    .eq('organization_id', auth.organizationId)
-    .is('deleted_at', null)
-    .eq('id', contactId)
-    .maybeSingle();
+  try {
+    const data = await prisma.contact.findFirst({
+      where: {
+        organizationId: auth.organizationId,
+        deletedAt: null,
+        id: contactId,
+      },
+      select: contactSelect,
+    });
 
-  if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
-  if (!data) return NextResponse.json({ error: 'Contact not found', code: 'NOT_FOUND' }, { status: 404 });
+    if (!data) return NextResponse.json({ error: 'Contact not found', code: 'NOT_FOUND' }, { status: 404 });
 
-  return NextResponse.json({ data });
+    return NextResponse.json({ data: toSnakeCase(data) });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
+  }
 }
 
 export async function PATCH(request: Request, ctx: { params: Promise<{ contactId: string }> }) {
@@ -87,50 +120,55 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ contactId
   if (parsed.data.email !== undefined) updates.email = normalizeEmail(parsed.data.email);
   if (parsed.data.phone !== undefined) updates.phone = normalizePhone(parsed.data.phone);
   if (parsed.data.role !== undefined) updates.role = normalizeText(parsed.data.role);
-  if (parsed.data.company_name !== undefined) updates.company_name = normalizeText(parsed.data.company_name);
+  if (parsed.data.company_name !== undefined) updates.companyName = normalizeText(parsed.data.company_name);
   if (parsed.data.avatar !== undefined) updates.avatar = normalizeText(parsed.data.avatar);
   if (parsed.data.status !== undefined) updates.status = normalizeText(parsed.data.status);
   if (parsed.data.stage !== undefined) updates.stage = normalizeText(parsed.data.stage);
   if (parsed.data.source !== undefined) updates.source = normalizeText(parsed.data.source);
   if (parsed.data.notes !== undefined) updates.notes = normalizeText(parsed.data.notes);
   if (parsed.data.client_company_id !== undefined) {
-    updates.client_company_id = parsed.data.client_company_id === null ? null : (sanitizeUUID(parsed.data.client_company_id) || null);
+    updates.clientCompanyId = parsed.data.client_company_id === null ? null : (sanitizeUUID(parsed.data.client_company_id) || null);
   }
   if (parsed.data.birth_date !== undefined) {
-    updates.birth_date = parsed.data.birth_date === null ? null : toIsoDateString(parsed.data.birth_date);
-    if (updates.birth_date === '__INVALID__') {
+    const bd = parsed.data.birth_date === null ? null : toIsoDateString(parsed.data.birth_date);
+    if (bd === '__INVALID__') {
       return NextResponse.json({ error: 'Invalid birth_date', code: 'VALIDATION_ERROR' }, { status: 422 });
     }
+    updates.birthDate = bd ? new Date(bd) : null;
   }
   if (parsed.data.last_purchase_date !== undefined) {
-    updates.last_purchase_date = parsed.data.last_purchase_date === null ? null : toIsoDateString(parsed.data.last_purchase_date);
-    if (updates.last_purchase_date === '__INVALID__') {
+    const lpd = parsed.data.last_purchase_date === null ? null : toIsoDateString(parsed.data.last_purchase_date);
+    if (lpd === '__INVALID__') {
       return NextResponse.json({ error: 'Invalid last_purchase_date', code: 'VALIDATION_ERROR' }, { status: 422 });
     }
+    updates.lastPurchaseDate = lpd ? new Date(lpd) : null;
   }
   if (parsed.data.last_interaction !== undefined) {
-    updates.last_interaction = parsed.data.last_interaction === null ? null : toIsoTimestamp(parsed.data.last_interaction);
-    if (updates.last_interaction === '__INVALID__') {
+    const li = parsed.data.last_interaction === null ? null : toIsoTimestamp(parsed.data.last_interaction);
+    if (li === '__INVALID__') {
       return NextResponse.json({ error: 'Invalid last_interaction', code: 'VALIDATION_ERROR' }, { status: 422 });
     }
+    updates.lastInteraction = li ? new Date(li) : null;
   }
   if (parsed.data.total_value !== undefined) {
-    updates.total_value = parsed.data.total_value === null ? null : Number(parsed.data.total_value);
+    updates.totalValue = parsed.data.total_value === null ? 0 : Number(parsed.data.total_value);
   }
-  updates.updated_at = new Date().toISOString();
 
-  const sb = createStaticAdminClient();
-  const { data, error } = await sb
-    .from('contacts')
-    .update(updates)
-    .eq('organization_id', auth.organizationId)
-    .eq('id', contactId)
-    .select('id,name,email,phone,role,company_name,client_company_id,avatar,notes,status,stage,source,birth_date,last_interaction,last_purchase_date,total_value,created_at,updated_at')
-    .maybeSingle();
+  try {
+    const existing = await prisma.contact.findFirst({
+      where: { organizationId: auth.organizationId, deletedAt: null, id: contactId },
+      select: { id: true },
+    });
+    if (!existing) return NextResponse.json({ error: 'Contact not found', code: 'NOT_FOUND' }, { status: 404 });
 
-  if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
-  if (!data) return NextResponse.json({ error: 'Contact not found', code: 'NOT_FOUND' }, { status: 404 });
+    const data = await prisma.contact.update({
+      where: { id: contactId },
+      data: updates,
+      select: contactSelect,
+    });
 
-  return NextResponse.json({ data });
+    return NextResponse.json({ data: toSnakeCase(data) });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
+  }
 }
-

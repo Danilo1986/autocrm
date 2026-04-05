@@ -4,7 +4,7 @@ import { SettingsSection } from './SettingsSection';
 import { Modal } from '@/components/ui/Modal';
 import ConfirmModal from '@/components/ConfirmModal';
 import { useBoards } from '@/context/boards/BoardsContext';
-import { supabase } from '@/lib/supabase/client';
+// supabase client removed - uses fetch() for integration operations
 import { useAuth } from '@/context/AuthContext';
 import { useToast } from '@/context/ToastContext';
 import { cn } from '@/lib/utils/cn';
@@ -127,22 +127,16 @@ export const WebhooksSection: React.FC = () => {
 
   async function loadWebhooks() {
     if (!canUse) return;
-    if (!supabase) return;
     setLoading(true);
     try {
-      const { data: srcData } = await supabase
-        .from('integration_inbound_sources')
-        .select('id,name,entry_board_id,entry_stage_id,secret,active')
-        .order('created_at', { ascending: false });
-      setSources((srcData as any) || []);
-
-      const { data: epData } = await supabase
-        .from('integration_outbound_endpoints')
-        .select('id,name,url,secret,active')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      setEndpoint((epData as any) || null);
+      const [srcRes, epRes] = await Promise.all([
+        fetch('/api/settings/integrations?type=inbound'),
+        fetch('/api/settings/integrations?type=outbound'),
+      ]);
+      const srcJson = await srcRes.json();
+      const epJson = await epRes.json();
+      setSources((srcJson.data || []) as InboundSourceRow[]);
+      setEndpoint((epJson.data as OutboundEndpointRow) || null);
     } finally {
       setLoading(false);
     }
@@ -150,7 +144,6 @@ export const WebhooksSection: React.FC = () => {
 
   React.useEffect(() => {
     if (!canUse) return;
-    if (!supabase) return;
 
     loadWebhooks();
   }, [canUse]);
@@ -176,16 +169,13 @@ export const WebhooksSection: React.FC = () => {
 
   async function loadInboundEvents(sourceId: string) {
     if (!canUse) return;
-    if (!supabase) return;
-    if (!profile?.organization_id) return;
-    const { data } = await supabase
-      .from('webhook_events_in')
-      .select('id,received_at,status,external_event_id,error,created_deal_id')
-      .eq('organization_id', profile.organization_id)
-      .eq('source_id', sourceId)
-      .order('received_at', { ascending: false })
-      .limit(3);
-    setInboundEvents((data as any) || []);
+    try {
+      const res = await fetch(`/api/settings/integrations?type=events&source_id=${sourceId}`);
+      const json = await res.json();
+      setInboundEvents((json.data || []) as InboundEventRow[]);
+    } catch {
+      setInboundEvents([]);
+    }
   }
 
   async function createInboundSource() {
@@ -195,22 +185,21 @@ export const WebhooksSection: React.FC = () => {
     const secret = generateSecret();
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('integration_inbound_sources')
-        .insert({
-          organization_id: profile!.organization_id,
-          name: 'Entrada de Leads',
+      const res = await fetch('/api/settings/integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'create_inbound',
           entry_board_id: selectedBoard.id,
           entry_stage_id: selectedStageId,
           secret,
-          active: true,
-        })
-        .select('id')
-        .single();
+          name: 'Entrada de Leads',
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Erro ao criar webhook');
 
-      if (error) throw error;
-
-      const sourceId = (data as any)?.id as string;
+      const sourceId = json.data?.id as string;
       setSources((prev) => [
         { id: sourceId, name: 'Entrada de Leads', entry_board_id: selectedBoard.id, entry_stage_id: selectedStageId, secret, active: true },
         ...prev,
@@ -231,14 +220,18 @@ export const WebhooksSection: React.FC = () => {
     if (!selectedBoard?.id || !selectedStageId) return;
     setLoading(true);
     try {
-      const { error } = await supabase
-        .from('integration_inbound_sources')
-        .update({
+      const res = await fetch('/api/settings/integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'update_inbound',
+          id: activeInbound.id,
           entry_board_id: selectedBoard.id,
           entry_stage_id: selectedStageId,
-        })
-        .eq('id', activeInbound.id);
-      if (error) throw error;
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Erro');
       addToast('Destino atualizado.', 'success');
       await loadWebhooks();
     } catch (e: any) {
@@ -296,34 +289,30 @@ export const WebhooksSection: React.FC = () => {
     setLoading(true);
     try {
       if (endpoint?.id) {
-        const { data, error } = await supabase
-          .from('integration_outbound_endpoints')
-          .update({
-            url: followUpUrl.trim(),
-          })
-          .eq('id', endpoint.id)
-          .select('id,name,url,secret,active')
-          .single();
-        if (error) throw error;
-        setEndpoint(data as any);
+        const res = await fetch('/api/settings/integrations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'update_outbound', id: endpoint.id, url: followUpUrl.trim() }),
+        });
+        const json = await res.json();
+        if (!res.ok || json.error) throw new Error(json.error || 'Erro');
+        setEndpoint(json.data as any);
         addToast('Follow-up atualizado!', 'success');
       } else {
         const secret = generateSecret();
-        const { data, error } = await supabase
-          .from('integration_outbound_endpoints')
-          .insert({
-            organization_id: profile!.organization_id,
-            name: 'Follow-up (Webhook)',
+        const res = await fetch('/api/settings/integrations', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'create_outbound',
             url: followUpUrl.trim(),
             secret,
             events: ['deal.stage_changed'],
-            active: true,
-          })
-          .select('id,name,url,secret,active')
-          .single();
-
-        if (error) throw error;
-        setEndpoint(data as any);
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok || json.error) throw new Error(json.error || 'Erro');
+        setEndpoint(json.data as any);
         addToast('Follow-up conectado!', 'success');
       }
       setIsFollowUpOpen(false);
@@ -354,11 +343,13 @@ export const WebhooksSection: React.FC = () => {
     if (!activeInbound) return;
     setLoading(true);
     try {
-      const { error } = await supabase
-        .from('integration_inbound_sources')
-        .update({ active: nextActive })
-        .eq('id', activeInbound.id);
-      if (error) throw error;
+      const res = await fetch('/api/settings/integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update_inbound', id: activeInbound.id, active: nextActive }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Erro');
       addToast(nextActive ? 'Entrada de leads ativada!' : 'Entrada de leads desativada.', 'success');
       await loadWebhooks();
     } catch (e: any) {
@@ -373,11 +364,13 @@ export const WebhooksSection: React.FC = () => {
     if (!activeInbound) return;
     setLoading(true);
     try {
-      const { error } = await supabase
-        .from('integration_inbound_sources')
-        .delete()
-        .eq('id', activeInbound.id);
-      if (error) throw error;
+      const res = await fetch('/api/settings/integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete_inbound', id: activeInbound.id }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Erro');
       addToast('Configuração de entrada removida.', 'success');
       await loadWebhooks();
     } catch (e: any) {
@@ -392,11 +385,13 @@ export const WebhooksSection: React.FC = () => {
     if (!endpoint?.id) return;
     setLoading(true);
     try {
-      const { error } = await supabase
-        .from('integration_outbound_endpoints')
-        .update({ active: nextActive })
-        .eq('id', endpoint.id);
-      if (error) throw error;
+      const res = await fetch('/api/settings/integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update_outbound', id: endpoint.id, active: nextActive }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Erro');
       addToast(nextActive ? 'Follow-up ativado!' : 'Follow-up desativado.', 'success');
       await loadWebhooks();
     } catch (e: any) {
@@ -412,14 +407,14 @@ export const WebhooksSection: React.FC = () => {
     const nextSecret = generateSecret();
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('integration_outbound_endpoints')
-        .update({ secret: nextSecret })
-        .eq('id', endpoint.id)
-        .select('id,name,url,secret,active')
-        .single();
-      if (error) throw error;
-      setEndpoint(data as any);
+      const res = await fetch('/api/settings/integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'update_outbound', id: endpoint.id, secret: nextSecret }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Erro');
+      setEndpoint(json.data as any);
       addToast('Secret do follow-up regenerado. Atualize no seu n8n/Make/WhatsApp.', 'success');
     } catch (e: any) {
       addToast(e?.message || 'Erro ao regenerar secret', 'error');
@@ -433,11 +428,13 @@ export const WebhooksSection: React.FC = () => {
     if (!endpoint?.id) return;
     setLoading(true);
     try {
-      const { error } = await supabase
-        .from('integration_outbound_endpoints')
-        .delete()
-        .eq('id', endpoint.id);
-      if (error) throw error;
+      const res = await fetch('/api/settings/integrations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'delete_outbound', id: endpoint.id }),
+      });
+      const json = await res.json();
+      if (!res.ok || json.error) throw new Error(json.error || 'Erro');
       setEndpoint(null);
       addToast('Follow-up removido.', 'success');
     } catch (e: any) {

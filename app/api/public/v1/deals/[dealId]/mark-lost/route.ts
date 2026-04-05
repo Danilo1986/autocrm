@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { authPublicApi } from '@/lib/public-api/auth';
-import { createStaticAdminClient } from '@/lib/supabase/server';
-import { isValidUUID } from '@/lib/supabase/utils';
+import { prisma } from '@/lib/db/prisma';
+import { isValidUUID } from '@/lib/utils/uuid';
 import { normalizeText } from '@/lib/public-api/sanitize';
 
 export const runtime = 'nodejs';
@@ -10,6 +10,30 @@ export const runtime = 'nodejs';
 const MarkLostSchema = z.object({
   loss_reason: z.string().optional(),
 }).strict();
+
+function toSnakeCase(d: any) {
+  return {
+    id: d.id,
+    title: d.title,
+    value: Number(d.value ?? 0),
+    board_id: d.boardId,
+    stage_id: d.stageId,
+    contact_id: d.contactId,
+    client_company_id: d.clientCompanyId ?? null,
+    is_won: !!d.isWon,
+    is_lost: !!d.isLost,
+    loss_reason: d.lossReason ?? null,
+    closed_at: d.closedAt ?? null,
+    created_at: d.createdAt,
+    updated_at: d.updatedAt,
+  };
+}
+
+const dealSelect = {
+  id: true, title: true, value: true, boardId: true, stageId: true,
+  contactId: true, clientCompanyId: true, isWon: true, isLost: true,
+  lossReason: true, closedAt: true, createdAt: true, updatedAt: true,
+};
 
 export async function POST(request: Request, ctx: { params: Promise<{ dealId: string }> }) {
   const auth = await authPublicApi(request);
@@ -26,27 +50,33 @@ export async function POST(request: Request, ctx: { params: Promise<{ dealId: st
     return NextResponse.json({ error: 'Invalid payload', code: 'VALIDATION_ERROR' }, { status: 422 });
   }
 
-  const sb = createStaticAdminClient();
-  const now = new Date().toISOString();
-  const updates: any = {
-    is_lost: true,
-    is_won: false,
-    closed_at: now,
-    updated_at: now,
-  };
-  if (parsed.data.loss_reason !== undefined) updates.loss_reason = normalizeText(parsed.data.loss_reason);
+  try {
+    const existing = await prisma.deal.findFirst({
+      where: {
+        organizationId: auth.organizationId,
+        deletedAt: null,
+        id: dealId,
+      },
+      select: { id: true },
+    });
+    if (!existing) return NextResponse.json({ error: 'Deal not found', code: 'NOT_FOUND' }, { status: 404 });
 
-  const { data, error } = await sb
-    .from('deals')
-    .update(updates)
-    .eq('organization_id', auth.organizationId)
-    .is('deleted_at', null)
-    .eq('id', dealId)
-    .select('id,title,value,board_id,stage_id,contact_id,client_company_id,is_won,is_lost,loss_reason,closed_at,created_at,updated_at')
-    .maybeSingle();
+    const now = new Date();
+    const updates: any = {
+      isLost: true,
+      isWon: false,
+      closedAt: now,
+    };
+    if (parsed.data.loss_reason !== undefined) updates.lossReason = normalizeText(parsed.data.loss_reason);
 
-  if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
-  if (!data) return NextResponse.json({ error: 'Deal not found', code: 'NOT_FOUND' }, { status: 404 });
-  return NextResponse.json({ data, action: 'lost' });
+    const data = await prisma.deal.update({
+      where: { id: dealId },
+      data: updates,
+      select: dealSelect,
+    });
+
+    return NextResponse.json({ data: toSnakeCase(data), action: 'lost' });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
+  }
 }
-

@@ -3,7 +3,8 @@
 
 import { createAgentUIStreamResponse, UIMessage } from 'ai';
 import { createCRMAgent } from '@/lib/ai/crmAgent';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
+import { auth } from '@/lib/auth/auth';
 import { AI_DEFAULT_MODELS } from '@/lib/ai/defaults';
 import type { CRMCallOptions } from '@/types/ai';
 import { isAllowedOrigin } from '@/lib/security/sameOrigin';
@@ -41,10 +42,8 @@ function asOptionalCockpitSnapshot(v: unknown): unknown | undefined {
     if (v == null) return undefined;
     if (typeof v !== 'object') return undefined;
 
-    // Guardrail: evita payloads gigantes que podem estourar limites ou degradar streaming.
     try {
         const text = JSON.stringify(v);
-        // ~80KB costuma ser um bom compromisso (contexto rico sem virar “dump”).
         if (text.length > 80_000) {
             console.warn('[AI Chat] cockpitSnapshot too large; ignoring.', {
                 bytes: text.length,
@@ -52,73 +51,52 @@ function asOptionalCockpitSnapshot(v: unknown): unknown | undefined {
             return undefined;
         }
     } catch {
-        // Se não serializa, não é seguro/útil como contexto.
         return undefined;
     }
 
     return v;
 }
 
-/**
- * Handler HTTP `POST` deste endpoint (Next.js Route Handler).
- *
- * @param {Request} req - Objeto da requisição.
- * @returns {Promise<Response>} Retorna um valor do tipo `Promise<Response>`.
- */
 export async function POST(req: Request) {
-    // Mitigação CSRF: endpoint autenticado por cookies.
     if (!isAllowedOrigin(req)) {
         return new Response('Forbidden', { status: 403 });
     }
 
-    const supabase = await createClient();
-
-    // 0. Parse request body early (we may need boardId to recover a missing profile.organization_id)
+    // 0. Parse request body early
     const body = await req.json().catch(() => null);
     const messages: UIMessage[] = (body?.messages ?? []) as UIMessage[];
     const rawContext = (body?.context ?? {}) as Record<string, unknown>;
 
     // 1. Auth check
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
+    const session = await auth();
+    if (!session?.user?.id) {
         return new Response('Unauthorized', { status: 401 });
     }
+    const user = session.user;
 
     // 2. Get profile with organization + role (RBAC)
-    const { data: profile } = await supabase
-        .from('profiles')
-        .select('organization_id, first_name, nickname, role')
-        .eq('id', user.id)
-        .single();
+    const profile = await prisma.profile.findUnique({
+        where: { id: user.id },
+        select: { organizationId: true, firstName: true, nickname: true, role: true },
+    });
 
-    // Alguns usuários legados podem existir sem organization_id no profile (ex.: signup sem raw_user_meta_data).
-    // Se veio boardId no contexto e o board é visível para o usuário autenticado (RLS), inferimos a org com segurança.
-    let organizationId = profile?.organization_id ?? null;
+    let organizationId = profile?.organizationId ?? null;
     if (!organizationId) {
         const boardId = typeof rawContext?.boardId === 'string' ? rawContext.boardId : null;
         if (boardId) {
-            const { data: board, error: boardError } = await supabase
-                .from('boards')
-                .select('organization_id')
-                .eq('id', boardId)
-                .maybeSingle();
+            const board = await prisma.board.findUnique({
+                where: { id: boardId },
+                select: { organizationId: true },
+            });
 
-            if (boardError) {
-                console.warn('[AI Chat] Failed to infer organization from board:', { boardId, message: boardError.message });
-            }
+            if (board?.organizationId) {
+                organizationId = board.organizationId;
 
-            if (board?.organization_id) {
-                organizationId = board.organization_id;
-
-                // Best-effort: persistir no profile para corrigir de vez.
-                const { error: updateProfileError } = await supabase
-                    .from('profiles')
-                    .update({ organization_id: organizationId, updated_at: new Date().toISOString() })
-                    .eq('id', user.id);
-
-                if (updateProfileError) {
-                    console.warn('[AI Chat] Failed to backfill profile.organization_id:', { message: updateProfileError.message });
-                }
+                // Best-effort: backfill profile
+                await prisma.profile.update({
+                    where: { id: user.id },
+                    data: { organizationId },
+                }).catch(() => {});
             }
         }
     }
@@ -130,14 +108,12 @@ export async function POST(req: Request) {
         );
     }
 
-    // 3. Get AI settings (org-wide: organization_settings é a fonte de verdade)
-    const { data: orgSettings } = await supabase
-        .from('organization_settings')
-        .select('ai_enabled, ai_provider, ai_model, ai_google_key, ai_openai_key, ai_anthropic_key')
-        .eq('organization_id', organizationId)
-        .maybeSingle();
+    // 3. Get AI settings
+    const orgSettings = await prisma.organizationSettings.findUnique({
+        where: { organizationId },
+    });
 
-    const aiEnabled = typeof (orgSettings as any)?.ai_enabled === 'boolean' ? (orgSettings as any).ai_enabled : true;
+    const aiEnabled = typeof orgSettings?.aiEnabled === 'boolean' ? orgSettings.aiEnabled : true;
     if (!aiEnabled) {
         return new Response(
             'IA desativada pela organização. Um admin pode ativar em Configurações → Central de I.A.',
@@ -145,7 +121,7 @@ export async function POST(req: Request) {
         );
     }
 
-    const chatEnabled = await isAIFeatureEnabled(supabase as any, organizationId, 'ai_chat_agent');
+    const chatEnabled = await isAIFeatureEnabled(null as any, organizationId, 'ai_chat_agent');
     if (!chatEnabled) {
         return new Response(
             'Função de IA desativada: Chat do agente (Pilot).',
@@ -153,15 +129,15 @@ export async function POST(req: Request) {
         );
     }
 
-    const provider = (orgSettings?.ai_provider ?? 'google') as AIProvider;
-    const modelId: string | null = orgSettings?.ai_model ?? null;
+    const provider = (orgSettings?.aiProvider ?? 'google') as AIProvider;
+    const modelId: string | null = orgSettings?.aiModel ?? null;
 
     const apiKey: string | null =
         provider === 'google'
-            ? (orgSettings?.ai_google_key ?? null)
+            ? (orgSettings?.aiGoogleKey ?? null)
             : provider === 'openai'
-                ? (orgSettings?.ai_openai_key ?? null)
-                : (orgSettings?.ai_anthropic_key ?? null);
+                ? (orgSettings?.aiOpenaiKey ?? null)
+                : (orgSettings?.aiAnthropicKey ?? null);
 
     if (!apiKey) {
         const providerLabel = provider === 'google' ? 'Google Gemini' : provider === 'openai' ? 'OpenAI' : 'Anthropic';
@@ -190,17 +166,16 @@ export async function POST(req: Request) {
         lostStage: asOptionalString(rawContext.lostStage),
         cockpitSnapshot: asOptionalCockpitSnapshot((rawContext as any)?.cockpitSnapshot),
         userId: user.id,
-        userName: profile?.nickname || profile?.first_name || user.email,
+        userName: profile?.nickname || profile?.firstName || user.email || undefined,
         userRole: (profile as any)?.role,
     };
 
     const rawContextSummary = {
         ...rawContext,
-        // Evita dump gigante no console.
         cockpitSnapshot: (rawContext as any)?.cockpitSnapshot ? '[provided]' : undefined,
     };
 
-    console.log('[AI Chat] 📨 Request received:', {
+    console.log('[AI Chat] Request received:', {
         messagesCount: messages?.length,
         rawContext: rawContextSummary,
         context: {
@@ -224,7 +199,6 @@ export async function POST(req: Request) {
         agent = await createCRMAgent(context, user.id, apiKey, resolvedModelId, provider);
     } catch (err: any) {
         const message = String(err?.message || err || 'Erro desconhecido');
-        // Ex.: quando o provider é Gemini mas o modelId é OpenAI (ou vice-versa), o SDK retorna mensagens parecidas.
         console.warn('[AI Chat] Failed to create agent/model:', { provider, modelId: resolvedModelId, message });
         return new Response(
             `Falha ao inicializar o modelo de IA (${provider} / ${resolvedModelId}). Verifique o provedor, o modelo selecionado e a chave de API.\n\nDetalhes: ${message}`,

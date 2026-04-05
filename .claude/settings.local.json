@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git clone:*)",
+      "Bash(git init:*)",
+      "Bash(git remote:*)",
+      "Bash(git pull:*)",
+      "Bash(ls -la /Users/danilo/Projetos/autocrm/*.ts)",
+      "Bash(grep -E \"\\\\.\\(ts|tsx\\)$\")",
+      "Bash(grep -r \"\\\\.from\\(\" /Users/danilo/Projetos/autocrm/lib/supabase/*.ts)",
+      "Bash(grep -r \"supabase\\\\.\" /Users/danilo/Projetos/autocrm/lib/supabase/*.ts)",
+      "Bash(npm install:*)",
+      "Bash(npm view:*)",
+      "Bash(npx prisma:*)",
+      "Bash(grep -E \"\\\\.\\(sql|ts\\)$\")",
+      "Bash(docker compose up:*)",
+      "Bash(DATABASE_URL=\"postgresql://nossocrm:nossocrm123@localhost:5434/nossocrm\" npx prisma:*)",
+      "Bash(node:*)",
+      "Bash(npx tsx:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)",
+      "Bash(grep -E \"^\\\\s+async \\\\w+|Promise\\\\<|return \\\\{|^\\\\s*\\\\},\")",
+      "Bash(psql:*)",
+      "Bash(docker exec autocrm-postgres-1:*)",
+      "Bash(docker cp:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)"
+    ]
+  }
+}

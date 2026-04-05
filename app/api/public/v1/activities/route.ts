@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { authPublicApi } from '@/lib/public-api/auth';
-import { createStaticAdminClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
 import { decodeOffsetCursor, encodeOffsetCursor, parseLimit } from '@/lib/public-api/cursor';
-import { sanitizeUUID } from '@/lib/supabase/utils';
+import { sanitizeUUID } from '@/lib/utils/uuid';
 import { normalizeText } from '@/lib/public-api/sanitize';
 
 export const runtime = 'nodejs';
@@ -18,6 +18,27 @@ const ActivityCreateSchema = z.object({
   client_company_id: z.string().uuid().optional(),
 }).strict();
 
+function toSnakeCase(a: any) {
+  return {
+    id: a.id,
+    title: a.title,
+    description: a.description ?? null,
+    type: a.type,
+    date: a.date,
+    completed: !!a.completed,
+    deal_id: a.dealId ?? null,
+    contact_id: a.contactId ?? null,
+    client_company_id: a.clientCompanyId ?? null,
+    created_at: a.createdAt,
+  };
+}
+
+const activitySelect = {
+  id: true, title: true, description: true, type: true, date: true,
+  completed: true, dealId: true, contactId: true, clientCompanyId: true,
+  createdAt: true,
+};
+
 export async function GET(request: Request) {
   const auth = await authPublicApi(request);
   if (!auth.ok) return NextResponse.json(auth.body, { status: auth.status });
@@ -30,44 +51,38 @@ export async function GET(request: Request) {
   const limit = parseLimit(url.searchParams.get('limit'));
   const offset = decodeOffsetCursor(url.searchParams.get('cursor'));
 
-  const sb = createStaticAdminClient();
-  let query = sb
-    .from('activities')
-    .select('id,title,description,type,date,completed,deal_id,contact_id,client_company_id,created_at', { count: 'exact' })
-    .eq('organization_id', auth.organizationId)
-    .is('deleted_at', null)
-    .order('date', { ascending: false })
-    .order('created_at', { ascending: false });
+  try {
+    const where: any = {
+      organizationId: auth.organizationId,
+      deletedAt: null,
+    };
 
-  if (dealId) query = query.eq('deal_id', dealId);
-  if (contactId) query = query.eq('contact_id', contactId);
-  if (clientCompanyId) query = query.eq('client_company_id', clientCompanyId);
-  if (type) query = query.eq('type', type);
+    if (dealId) where.dealId = dealId;
+    if (contactId) where.contactId = contactId;
+    if (clientCompanyId) where.clientCompanyId = clientCompanyId;
+    if (type) where.type = type;
 
-  const from = offset;
-  const to = offset + limit - 1;
-  const { data, count, error } = await query.range(from, to);
-  if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
+    const [data, total] = await Promise.all([
+      prisma.activity.findMany({
+        where,
+        select: activitySelect,
+        orderBy: [{ date: 'desc' }, { createdAt: 'desc' }],
+        skip: offset,
+        take: limit,
+      }),
+      prisma.activity.count({ where }),
+    ]);
 
-  const total = count ?? 0;
-  const nextOffset = to + 1;
-  const nextCursor = nextOffset < total ? encodeOffsetCursor(nextOffset) : null;
+    const nextOffset = offset + limit;
+    const nextCursor = nextOffset < total ? encodeOffsetCursor(nextOffset) : null;
 
-  return NextResponse.json({
-    data: (data || []).map((a: any) => ({
-      id: a.id,
-      title: a.title,
-      description: a.description ?? null,
-      type: a.type,
-      date: a.date,
-      completed: !!a.completed,
-      deal_id: a.deal_id ?? null,
-      contact_id: a.contact_id ?? null,
-      client_company_id: a.client_company_id ?? null,
-      created_at: a.created_at,
-    })),
-    nextCursor,
-  });
+    return NextResponse.json({
+      data: data.map(toSnakeCase),
+      nextCursor,
+    });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
+  }
 }
 
 export async function POST(request: Request) {
@@ -86,26 +101,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid date', code: 'VALIDATION_ERROR' }, { status: 422 });
   }
 
-  const sb = createStaticAdminClient();
-  const insertPayload: any = {
-    organization_id: auth.organizationId,
-    title: normalizeText(parsed.data.title) || parsed.data.title,
-    description: normalizeText(parsed.data.description),
-    type: normalizeText(parsed.data.type) || parsed.data.type,
-    date: date.toISOString(),
-    completed: false,
-    deal_id: sanitizeUUID(parsed.data.deal_id) || null,
-    contact_id: sanitizeUUID(parsed.data.contact_id) || null,
-    client_company_id: sanitizeUUID(parsed.data.client_company_id) || null,
-    created_at: now.toISOString(),
-  };
-
-  const { data, error } = await sb
-    .from('activities')
-    .insert(insertPayload)
-    .select('id,title,description,type,date,completed,deal_id,contact_id,client_company_id,created_at')
-    .single();
-  if (error) return NextResponse.json({ error: error.message, code: 'DB_ERROR' }, { status: 500 });
-  return NextResponse.json({ data, action: 'created' }, { status: 201 });
+  try {
+    const data = await prisma.activity.create({
+      data: {
+        organizationId: auth.organizationId,
+        title: normalizeText(parsed.data.title) || parsed.data.title,
+        description: normalizeText(parsed.data.description),
+        type: normalizeText(parsed.data.type) || parsed.data.type,
+        date,
+        completed: false,
+        dealId: sanitizeUUID(parsed.data.deal_id) || null,
+        contactId: sanitizeUUID(parsed.data.contact_id) || null,
+        clientCompanyId: sanitizeUUID(parsed.data.client_company_id) || null,
+      },
+      select: activitySelect,
+    });
+    return NextResponse.json({ data: toSnakeCase(data), action: 'created' }, { status: 201 });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message, code: 'DB_ERROR' }, { status: 500 });
+  }
 }
-

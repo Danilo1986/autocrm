@@ -1,11 +1,11 @@
 import 'server-only';
 
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
+import { auth } from '@/lib/auth/auth';
 import { isAllowedOrigin } from '@/lib/security/sameOrigin';
 import { getModel, type AIProvider } from '@/lib/ai/config';
 
 export type AITaskContext = {
-  supabase: Awaited<ReturnType<typeof createClient>>;
   userId: string;
   organizationId: string;
   provider: AIProvider;
@@ -21,91 +21,61 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/**
- * Classe `AITaskHttpError` do projeto.
- */
 export class AITaskHttpError extends Error {
   status: number;
   code: string;
 
-    /**
-   * Constrói uma instância de `AITaskHttpError`.
-   *
-   * @param {number} status - Parâmetro `status`.
-   * @param {string} code - Parâmetro `code`.
-   * @param {string} message - Parâmetro `message`.
-   * @returns {void} Não retorna valor.
-   */
-constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string) {
     super(message);
     this.status = status;
     this.code = code;
   }
 
-    /**
-   * Método público `toResponse`.
-   * @returns {Response} Retorna um valor do tipo `Response`.
-   */
-toResponse() {
+  toResponse() {
     return json({ error: { code: this.code, message: this.message } }, this.status);
   }
 }
 
-/**
- * Função pública `requireAITaskContext` do projeto.
- *
- * @param {Request} req - Objeto da requisição.
- * @returns {Promise<AITaskContext>} Retorna um valor do tipo `Promise<AITaskContext>`.
- */
 export async function requireAITaskContext(req: Request): Promise<AITaskContext> {
-  // Mitigação CSRF: endpoint autenticado por cookies.
   if (!isAllowedOrigin(req)) {
     throw new AITaskHttpError(403, 'FORBIDDEN', 'Forbidden');
   }
 
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
+  const session = await auth();
+  if (!session?.user?.id) {
     throw new AITaskHttpError(401, 'UNAUTHORIZED', 'Unauthorized');
   }
 
-  const { data: profile, error: profileError } = await supabase
-    .from('profiles')
-    .select('organization_id')
-    .eq('id', user.id)
-    .single();
+  const profile = await prisma.profile.findUnique({
+    where: { id: session.user.id },
+    select: { organizationId: true },
+  });
 
-  if (profileError || !profile?.organization_id) {
+  if (!profile?.organizationId) {
     throw new AITaskHttpError(404, 'PROFILE_NOT_FOUND', 'Profile not found');
   }
 
-  const organizationId = profile.organization_id as string;
+  const organizationId = profile.organizationId as string;
 
-  const { data: orgSettings, error: orgError } = await supabase
-    .from('organization_settings')
-    .select('ai_enabled, ai_provider, ai_model, ai_google_key, ai_openai_key, ai_anthropic_key')
-    .eq('organization_id', organizationId)
-    .single();
+  const orgSettings = await prisma.organizationSettings.findUnique({
+    where: { organizationId },
+  });
 
-  const aiEnabled = typeof orgSettings?.ai_enabled === 'boolean' ? orgSettings.ai_enabled : true;
+  const aiEnabled = typeof orgSettings?.aiEnabled === 'boolean' ? orgSettings.aiEnabled : true;
   if (!aiEnabled) {
     throw new AITaskHttpError(403, 'AI_DISABLED', 'IA desativada pela organização. Um admin pode ativar em Configurações → Central de I.A.');
   }
 
-  const provider: AIProvider = (orgSettings?.ai_provider ?? 'google') as AIProvider;
+  const provider: AIProvider = (orgSettings?.aiProvider ?? 'google') as AIProvider;
 
   const apiKey: string | null =
     provider === 'google'
-      ? (orgSettings?.ai_google_key ?? null)
+      ? (orgSettings?.aiGoogleKey ?? null)
       : provider === 'openai'
-        ? (orgSettings?.ai_openai_key ?? null)
-        : (orgSettings?.ai_anthropic_key ?? null);
+        ? (orgSettings?.aiOpenaiKey ?? null)
+        : (orgSettings?.aiAnthropicKey ?? null);
 
-  if (orgError || !apiKey) {
+  if (!apiKey) {
     const providerLabel = provider === 'google' ? 'Google Gemini' : provider === 'openai' ? 'OpenAI' : 'Anthropic';
     throw new AITaskHttpError(
       400,
@@ -114,12 +84,11 @@ export async function requireAITaskContext(req: Request): Promise<AITaskContext>
     );
   }
 
-  const modelId = orgSettings?.ai_model || '';
+  const modelId = orgSettings?.aiModel || '';
   const model = getModel(provider, apiKey, modelId);
 
   return {
-    supabase,
-    userId: user.id,
+    userId: session.user.id,
     organizationId,
     provider,
     modelId,

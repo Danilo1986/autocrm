@@ -2,11 +2,13 @@
  * Migration stub - Supabase Admin Client for Tests
  *
  * Previously used @supabase/supabase-js for integration tests.
- * Now provides the same interface backed by Prisma shim.
+ * Now backed by Prisma directly.
  */
+import { prisma } from '@/lib/db/prisma'
+
 import { createStaticAdminClient } from '@/lib/supabase/server'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 let adminClient: any = null;
 
 type SupabaseResult<T> = {

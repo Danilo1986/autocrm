@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
+import { auth } from '@/lib/auth/auth';
 import { stringifyCsv, withUtf8Bom, type CsvDelimiter } from '@/lib/utils/csv';
 
 type SortBy = 'name' | 'created_at' | 'updated_at' | 'stage';
@@ -19,12 +20,13 @@ function parseSortOrder(v: string | undefined): SortOrder {
   return v === 'asc' ? 'asc' : 'desc';
 }
 
-/**
- * Handler HTTP `GET` deste endpoint (Next.js Route Handler).
- *
- * @param {Request} req - Objeto da requisição.
- * @returns {Promise<NextResponse<unknown>>} Retorna um valor do tipo `Promise<NextResponse<unknown>>`.
- */
+// Map snake_case sortBy to Prisma camelCase field
+function prismaOrderBy(sortBy: SortBy): string {
+  if (sortBy === 'created_at') return 'createdAt';
+  if (sortBy === 'updated_at') return 'updatedAt';
+  return sortBy;
+}
+
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
@@ -39,94 +41,69 @@ export async function GET(req: Request) {
     const sortBy = parseSortBy(getParam(sp, 'sortBy'));
     const sortOrder = parseSortOrder(getParam(sp, 'sortOrder'));
 
-    const supabase = await createClient();
-
-    const chunkSize = 1000;
-    let page = 0;
-    let allContacts: Array<any> = [];
-
-    // We'll fetch in chunks. For export, we don't rely on count to avoid expensive exact counts.
-    // Stop when a chunk returns less than chunkSize.
-    while (true) {
-      const from = page * chunkSize;
-      const to = from + chunkSize - 1;
-
-      let q = supabase
-        .from('contacts')
-        .select(
-          'id,name,email,phone,role,notes,status,stage,created_at,updated_at,client_company_id,last_purchase_date'
-        )
-        .is('deleted_at', null);
-
-      if (search) {
-        q = q.or(`name.ilike.%${search}%,email.ilike.%${search}%`);
-      }
-      if (stage && stage !== 'ALL') {
-        q = q.eq('stage', stage);
-      }
-      if (status && status !== 'ALL') {
-        if (status === 'RISK') {
-          const thirtyDaysAgo = new Date();
-          thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-          q = q.eq('status', 'ACTIVE').lt('last_purchase_date', thirtyDaysAgo.toISOString());
-        } else {
-          q = q.eq('status', status);
-        }
-      }
-      if (dateStart) q = q.gte('created_at', dateStart);
-      if (dateEnd) q = q.lte('created_at', dateEnd);
-
-      const { data, error } = await q
-        .order(sortBy, { ascending: sortOrder === 'asc' })
-        .range(from, to);
-
-      if (error) {
-        return NextResponse.json({ error: error.message }, { status: 400 });
-      }
-
-      const chunk = (data || []) as any[];
-      allContacts = allContacts.concat(chunk);
-      if (chunk.length < chunkSize) break;
-      page += 1;
+    const session = await auth();
+    const userId = session?.user?.id;
+    let organizationId: string | null = null;
+    if (userId) {
+      const profile = await prisma.profile.findUnique({
+        where: { id: userId },
+        select: { organizationId: true },
+      });
+      organizationId = profile?.organizationId ?? null;
     }
 
-    // Company name mapping (optional)
+    const where: any = { deletedAt: null };
+    if (organizationId) where.organizationId = organizationId;
+
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { email: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+    if (stage && stage !== 'ALL') where.stage = stage;
+    if (status && status !== 'ALL') {
+      if (status === 'RISK') {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        where.status = 'ACTIVE';
+        where.lastPurchaseDate = { lt: thirtyDaysAgo };
+      } else {
+        where.status = status;
+      }
+    }
+    if (dateStart) where.createdAt = { ...(where.createdAt || {}), gte: new Date(dateStart) };
+    if (dateEnd) where.createdAt = { ...(where.createdAt || {}), lte: new Date(dateEnd) };
+
+    const allContacts = await prisma.contact.findMany({
+      where,
+      select: {
+        id: true, name: true, email: true, phone: true, role: true,
+        notes: true, status: true, stage: true, createdAt: true,
+        updatedAt: true, clientCompanyId: true, lastPurchaseDate: true,
+      },
+      orderBy: { [prismaOrderBy(sortBy)]: sortOrder },
+    });
+
+    // Company name mapping
     const companyIds = Array.from(
-      new Set(allContacts.map(c => c.client_company_id).filter(Boolean))
+      new Set(allContacts.map(c => c.clientCompanyId).filter(Boolean))
     ) as string[];
 
     const companyNameById = new Map<string, string>();
     if (companyIds.length) {
-      // Fetch companies in chunks to avoid query limits
-      const idChunkSize = 500;
-      for (let i = 0; i < companyIds.length; i += idChunkSize) {
-        const ids = companyIds.slice(i, i + idChunkSize);
-        const { data: companies, error: companiesError } = await supabase
-          .from('crm_companies')
-          .select('id,name')
-          .in('id', ids)
-          .is('deleted_at', null);
-
-        if (companiesError) {
-          return NextResponse.json({ error: companiesError.message }, { status: 400 });
-        }
-        for (const c of (companies || []) as Array<{ id: string; name: string }>) {
-          companyNameById.set(c.id, c.name || '');
-        }
+      const companies = await prisma.crmCompany.findMany({
+        where: { id: { in: companyIds }, deletedAt: null },
+        select: { id: true, name: true },
+      });
+      for (const c of companies) {
+        companyNameById.set(c.id, c.name || '');
       }
     }
 
     const header = [
-      'name',
-      'email',
-      'phone',
-      'role',
-      'company',
-      'status',
-      'stage',
-      'notes',
-      'created_at',
-      'updated_at',
+      'name', 'email', 'phone', 'role', 'company',
+      'status', 'stage', 'notes', 'created_at', 'updated_at',
     ];
 
     const dataRows = allContacts.map(c => [
@@ -134,12 +111,12 @@ export async function GET(req: Request) {
       c.email || '',
       c.phone || '',
       c.role || '',
-      companyNameById.get(c.client_company_id) || '',
+      companyNameById.get(c.clientCompanyId || '') || '',
       c.status || '',
       c.stage || '',
       c.notes || '',
-      c.created_at || '',
-      c.updated_at || '',
+      c.createdAt?.toISOString() || '',
+      c.updatedAt?.toISOString() || '',
     ]);
 
     const d: CsvDelimiter = delimiter === ';' || delimiter === '\t' || delimiter === ',' ? delimiter : ',';
@@ -163,4 +140,3 @@ export async function GET(req: Request) {
     );
   }
 }
-

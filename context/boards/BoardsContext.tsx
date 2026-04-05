@@ -14,7 +14,7 @@ import { useAuth } from '../AuthContext';
 import { useToast } from '../ToastContext';
 import { queryKeys } from '@/lib/query';
 import { useBoards as useTanStackBoards } from '@/lib/query/hooks/useBoardsQuery';
-import { isValidUUID } from '@/lib/supabase/utils';
+import { isValidUUID } from '@/lib/utils/uuid';
 
 interface BoardsContextType {
   boards: Board[];

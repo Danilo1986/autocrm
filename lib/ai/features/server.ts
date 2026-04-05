@@ -1,29 +1,32 @@
 import 'server-only';
 
+import { prisma } from '@/lib/db/prisma';
+
 /**
  * Checks if a specific AI feature is enabled for the organization.
- * Now accepts a generic supabase-like shim (from server.ts) instead of SupabaseClient.
+ * The first parameter (_supabase) is kept for backward compatibility but ignored.
  */
 export async function isAIFeatureEnabled(
-  supabase: any,
+  _supabase: any,
   organizationId: string,
   key: string
 ): Promise<boolean> {
-  const { data, error } = await supabase
-    .from('ai_feature_flags')
-    .select('enabled')
-    .eq('organization_id', organizationId)
-    .eq('key', key)
-    .maybeSingle();
+  try {
+    const flag = await prisma.aiFeatureFlag.findFirst({
+      where: {
+        organizationId,
+        key,
+      },
+      select: { enabled: true },
+    });
 
-  if (error) {
+    // Default: enabled when missing
+    return flag?.enabled !== false;
+  } catch (error: any) {
     console.warn('[ai/features] Failed to load feature flag; defaulting to enabled.', {
       key,
-      message: error.message,
+      message: error?.message,
     });
     return true;
   }
-
-  // Default: enabled when missing
-  return data?.enabled !== false;
 }

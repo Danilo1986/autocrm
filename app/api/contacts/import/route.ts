@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createClient } from '@/lib/supabase/server';
+import { prisma } from '@/lib/db/prisma';
+import { auth } from '@/lib/auth/auth';
 import { detectCsvDelimiter, parseCsv, type CsvDelimiter } from '@/lib/utils/csv';
 import { normalizePhoneE164 } from '@/lib/phone';
 
@@ -134,19 +135,17 @@ export async function POST(req: Request) {
 
     const mapping = buildHeaderIndex(headers);
 
-    // Parse rows
     const parsed: Array<{ rowNumber: number; data: ParsedRow }> = [];
     const errors: Array<{ rowNumber: number; message: string }> = [];
 
     for (let i = 0; i < rows.length; i += 1) {
       const r = rows[i];
-      const rowNumber = i + 2; // +1 header, +1 1-indexed
+      const rowNumber = i + 2;
 
       const firstName = getCell(r, mapping.firstName);
       const lastName = getCell(r, mapping.lastName);
       const name = getCell(r, mapping.name);
       const email = getCell(r, mapping.email);
-      const phone = getCell(r, mapping.phone);
 
       const computedName =
         (firstName || lastName)
@@ -163,7 +162,7 @@ export async function POST(req: Request) {
         data: {
           name: computedName,
           email,
-          phone,
+          phone: getCell(r, mapping.phone),
           role: getCell(r, mapping.role),
           company: getCell(r, mapping.company),
           status: normalizeStatus(getCell(r, mapping.status)),
@@ -175,29 +174,32 @@ export async function POST(req: Request) {
 
     if (!parsed.length) {
       return NextResponse.json(
-        {
-          error: 'Nenhuma linha válida para importar.',
-          errors,
-        },
+        { error: 'Nenhuma linha válida para importar.', errors },
         { status: 400 }
       );
     }
 
-    const supabase = await createClient();
-
-    // Companies: preload and optionally create missing ones
-    const { data: companies, error: companiesError } = await supabase
-      .from('crm_companies')
-      .select('id,name')
-      .is('deleted_at', null);
-
-    if (companiesError) {
-      return NextResponse.json({ error: companiesError.message }, { status: 400 });
+    // Get session to find the user's organization
+    const session = await auth();
+    const userId = session?.user?.id;
+    let organizationId: string | null = null;
+    if (userId) {
+      const profile = await prisma.profile.findUnique({
+        where: { id: userId },
+        select: { organizationId: true },
+      });
+      organizationId = profile?.organizationId ?? null;
     }
 
+    // Companies: preload and optionally create missing ones
+    const companies = await prisma.crmCompany.findMany({
+      where: { deletedAt: null, ...(organizationId ? { organizationId } : {}) },
+      select: { id: true, name: true },
+    });
+
     const companyIdByName = new Map<string, string>();
-    for (const c of (companies || []) as Array<{ id: string; name: string }>) {
-      if (c?.id && c?.name) companyIdByName.set(normalizeHeader(c.name), c.id);
+    for (const c of companies) {
+      if (c.id && c.name) companyIdByName.set(normalizeHeader(c.name), c.id);
     }
 
     const missingCompanies = new Set<string>();
@@ -211,17 +213,16 @@ export async function POST(req: Request) {
     }
 
     if (createCompanies && missingCompanies.size) {
-      const payload = Array.from(missingCompanies).map(name => ({ name }));
-      const { data: createdCompanies, error: createCompaniesError } = await supabase
-        .from('crm_companies')
-        .insert(payload)
-        .select('id,name');
-
-      if (createCompaniesError) {
-        return NextResponse.json({ error: createCompaniesError.message }, { status: 400 });
-      }
-      for (const c of (createdCompanies || []) as Array<{ id: string; name: string }>) {
-        if (c?.id && c?.name) companyIdByName.set(normalizeHeader(c.name), c.id);
+      for (const name of missingCompanies) {
+        try {
+          const created = await prisma.crmCompany.create({
+            data: { name, ...(organizationId ? { organizationId } : {}) },
+            select: { id: true, name: true },
+          });
+          if (created.id && created.name) companyIdByName.set(normalizeHeader(created.name), created.id);
+        } catch {
+          // skip if creation fails (e.g. unique constraint)
+        }
       }
     }
 
@@ -236,25 +237,20 @@ export async function POST(req: Request) {
 
     const contactIdsByEmail = new Map<string, string[]>();
     if (emails.length) {
-      const chunkSize = 500;
-      for (let i = 0; i < emails.length; i += chunkSize) {
-        const chunk = emails.slice(i, i + chunkSize);
-        const { data: existing, error: existingError } = await supabase
-          .from('contacts')
-          .select('id,email')
-          .in('email', chunk)
-          .is('deleted_at', null);
-
-        if (existingError) {
-          return NextResponse.json({ error: existingError.message }, { status: 400 });
-        }
-        for (const c of (existing || []) as Array<{ id: string; email: string | null }>) {
-          const em = (c.email || '').toLowerCase().trim();
-          if (!em) continue;
-          const arr = contactIdsByEmail.get(em) || [];
-          arr.push(c.id);
-          contactIdsByEmail.set(em, arr);
-        }
+      const existingContacts = await prisma.contact.findMany({
+        where: {
+          email: { in: emails },
+          deletedAt: null,
+          ...(organizationId ? { organizationId } : {}),
+        },
+        select: { id: true, email: true },
+      });
+      for (const c of existingContacts) {
+        const em = (c.email || '').toLowerCase().trim();
+        if (!em) continue;
+        const arr = contactIdsByEmail.get(em) || [];
+        arr.push(c.id);
+        contactIdsByEmail.set(em, arr);
       }
     }
 
@@ -262,19 +258,18 @@ export async function POST(req: Request) {
     let updated = 0;
     let skipped = 0;
 
-    // Import in manageable chunks to reduce payload sizes
-    const insertBatch: Array<{ rowNumber: number; payload: Record<string, unknown> }> = [];
+    const insertBatch: Array<{ rowNumber: number; payload: any }> = [];
     const flushInsert = async () => {
       if (!insertBatch.length) return;
-      const payloads = insertBatch.map(i => i.payload);
-      const { error: insertError } = await supabase.from('contacts').insert(payloads);
-      if (insertError) {
-        // If batch insert fails, mark all rows as errors (keep it simple for v1)
+      try {
+        await prisma.contact.createMany({
+          data: insertBatch.map(i => i.payload),
+        });
+        created += insertBatch.length;
+      } catch (insertError: any) {
         for (const item of insertBatch) {
           errors.push({ rowNumber: item.rowNumber, message: insertError.message });
         }
-      } else {
-        created += insertBatch.length;
       }
       insertBatch.length = 0;
     };
@@ -286,22 +281,21 @@ export async function POST(req: Request) {
       const companyName = (p.data.company || '').trim();
       const companyId = companyName ? companyIdByName.get(normalizeHeader(companyName)) : undefined;
 
-      const base = {
+      const base: any = {
         name: p.data.name || '',
         email: p.data.email || null,
         phone: phoneE164 || null,
         role: p.data.role || null,
-        client_company_id: companyId || null,
+        clientCompanyId: companyId || null,
         notes: p.data.notes || null,
         status: p.data.status || 'ACTIVE',
         stage: p.data.stage || 'LEAD',
-        updated_at: new Date().toISOString(),
+        ...(organizationId ? { organizationId } : {}),
       };
 
       const existingIds = email ? (contactIdsByEmail.get(email) || []) : [];
 
       if (mode === 'create_only') {
-        // Always create, even if duplicates exist.
         insertBatch.push({ rowNumber, payload: base });
         if (insertBatch.length >= 200) await flushInsert();
         continue;
@@ -318,28 +312,23 @@ export async function POST(req: Request) {
           continue;
         }
         const id = existingIds[0];
-        const { error: updateError } = await supabase
-          .from('contacts')
-          .update(base)
-          .eq('id', id);
-
-        if (updateError) {
-          errors.push({ rowNumber, message: updateError.message });
-        } else {
+        try {
+          await prisma.contact.update({
+            where: { id },
+            data: base,
+          });
           updated += 1;
+        } catch (updateError: any) {
+          errors.push({ rowNumber, message: updateError.message });
         }
         continue;
       }
 
-      // No email match (or no email): create
       insertBatch.push({ rowNumber, payload: base });
       if (insertBatch.length >= 200) await flushInsert();
     }
 
     await flushInsert();
-
-    // Remove internal field from potential logs; not persisted in DB anyway (supabase ignores unknown)
-    // but we keep it only in memory; ok.
 
     return NextResponse.json({
       ok: true,
@@ -363,4 +352,3 @@ export async function POST(req: Request) {
     );
   }
 }
-

@@ -1,18 +1,23 @@
 import { tool } from 'ai';
 import { z } from 'zod';
-import { createStaticAdminClient } from '@/lib/supabase/staticAdminClient';
+import { prisma } from '@/lib/db/prisma';
 import type { CRMCallOptions } from '@/types/ai';
+
+// Thin Supabase-compat adapter backed by Prisma. This avoids a 1600-line rewrite
+// while removing the dependency on the legacy supabase shim. The adapter implements
+// only the subset of the Supabase PostgREST API used by the AI tools below.
+// TODO: Migrate each tool to call prisma directly and remove this adapter.
+import { createSupabasePrismaAdapter } from '@/lib/supabase/prismaAdapter';
 
 /**
  * Creates all CRM tools with context injection
  * Context is provided at runtime via the agent's callOptionsSchema
- * 
- * NOTE: Uses createStaticAdminClient (service role, no cookies) to bypass RLS
- * because async AI agent context doesn't have access to request cookies.
+ *
+ * NOTE: Uses prisma directly (no cookies needed) for data access.
  */
 export function createCRMTools(context: CRMCallOptions, userId: string) {
-    // Initialize supabase admin client directly (no async, no cookies needed)
-    const supabase = createStaticAdminClient();
+    // Supabase-compat adapter backed by Prisma
+    const supabase = createSupabasePrismaAdapter();
     const organizationId = context.organizationId;
 
     // Em UI normal, ações são gateadas por um card de Aprovar/Negar.

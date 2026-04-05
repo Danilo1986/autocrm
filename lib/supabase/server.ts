@@ -250,19 +250,85 @@ function createQueryBuilder(table: string) {
     then(resolve: (value: any) => any) {
       return executeQuery('many').then(resolve)
     },
-    // Mutations
-    async insert(data: any) {
-      return executeMutation('insert', data)
+    // Mutations - return builder for chaining .eq() etc, then resolve on terminal
+    insert(data: any) {
+      const mutBuilder = createMutationBuilder('insert', data)
+      return mutBuilder
     },
-    async update(data: any) {
-      return executeMutation('update', data)
+    update(data: any) {
+      const mutBuilder = createMutationBuilder('update', data)
+      return mutBuilder
     },
-    async upsert(data: any, opts?: { onConflict?: string }) {
-      return executeMutation('upsert', data, opts)
+    upsert(data: any, opts?: { onConflict?: string }) {
+      const mutBuilder = createMutationBuilder('upsert', data, opts)
+      return mutBuilder
     },
-    async delete() {
-      return executeMutation('delete')
+    delete() {
+      const mutBuilder = createMutationBuilder('delete')
+      return mutBuilder
     },
+  }
+
+  function createMutationBuilder(op: string, data?: any, opts?: any) {
+    const mutWhere: Record<string, unknown> = { ...where }
+
+    const mutBuilder: any = {
+      eq(field: string, value: unknown) { mutWhere[snakeToCamel(field)] = value; return mutBuilder },
+      neq(field: string, value: unknown) { mutWhere[snakeToCamel(field)] = { not: value }; return mutBuilder },
+      is(field: string, value: unknown) { mutWhere[snakeToCamel(field)] = value; return mutBuilder },
+      in(field: string, values: unknown[]) { mutWhere[snakeToCamel(field)] = { in: values }; return mutBuilder },
+      not(field: string, _op: string, value: unknown) { mutWhere[snakeToCamel(field)] = { not: value }; return mutBuilder },
+      select(_fields?: string) { return mutBuilder },
+      order() { return mutBuilder },
+      limit() { return mutBuilder },
+      async single() { return executeMut() },
+      async maybeSingle() { return executeMut() },
+      then(resolve: (value: any) => any) { return executeMut().then(resolve) },
+      catch(fn: (err: any) => any) { return executeMut().catch(fn) },
+    }
+
+    async function executeMut() {
+      if (!model) return { data: null, error: new Error(`Unknown table: ${table}`) }
+      try {
+        const prismaModel = (prisma as any)[model]
+        const camelData = data ? snakeToCamelObj(data) : undefined
+        switch (op) {
+          case 'insert': {
+            const result = await prismaModel.create({ data: camelData })
+            return { data: camelToSnakeObj(result), error: null }
+          }
+          case 'update': {
+            const result = await prismaModel.updateMany({ where: mutWhere, data: camelData })
+            return { data: result, error: null }
+          }
+          case 'upsert': {
+            const result = await prismaModel.upsert({
+              where: mutWhere,
+              update: camelData,
+              create: camelData,
+            }).catch(async () => {
+              // Fallback: try create, if exists update
+              try {
+                return await prismaModel.create({ data: camelData })
+              } catch {
+                return await prismaModel.updateMany({ where: mutWhere, data: camelData })
+              }
+            })
+            return { data: camelToSnakeObj(result), error: null }
+          }
+          case 'delete': {
+            await prismaModel.deleteMany({ where: mutWhere })
+            return { data: null, error: null }
+          }
+          default:
+            return { data: null, error: new Error(`Unknown op: ${op}`) }
+        }
+      } catch (error) {
+        return { data: null, error: error as Error }
+      }
+    }
+
+    return mutBuilder
   }
 
   async function executeQuery(mode: 'single' | 'maybeSingle' | 'many') {

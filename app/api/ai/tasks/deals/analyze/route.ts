@@ -23,8 +23,8 @@ function json(body: unknown, status = 200): Response {
  */
 export async function POST(req: Request) {
   try {
-    const { model, supabase, organizationId } = await requireAITaskContext(req);
-    const enabled = await isAIFeatureEnabled(supabase as any, organizationId, 'ai_deal_analyze');
+    const { model, organizationId } = await requireAITaskContext(req);
+    const enabled = await isAIFeatureEnabled(null, organizationId, 'ai_deal_analyze');
     if (!enabled) {
       return json({ error: { code: 'AI_FEATURE_DISABLED', message: 'Função de IA desativada: Análise de deal.' } }, 403);
     }
@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     const value = deal?.value ?? 0;
     const formattedValue = typeof value === 'number' ? value.toLocaleString('pt-BR') : String(value);
 
-    const resolved = await getResolvedPrompt(supabase, organizationId, 'task_deals_analyze');
+    const resolved = await getResolvedPrompt(null, organizationId, 'task_deals_analyze');
     const prompt = renderPromptTemplate(resolved?.content || '', {
       dealTitle: deal?.title || '',
       dealValue: formattedValue,
