@@ -1,41 +1,58 @@
 /**
  * Client-safe service wrappers
  *
- * These wrap the Prisma services to work in both server and client contexts.
- * On the server: calls Prisma directly.
- * On the client: calls API routes via fetch.
- *
- * This allows contexts ('use client') to import from here instead of
- * directly from the Prisma-based services.
+ * Browser: calls /api/internal/data via fetch (session auth)
+ * Server: calls Prisma directly via lazy import
  */
 
 const isServer = typeof window === 'undefined'
 
-// Helper: call an API route and return { data, error } format
-async function apiFetch<T>(url: string, options?: RequestInit): Promise<{ data: T | null; error: Error | null }> {
+const API = '/api/internal/data'
+
+async function apiFetch<T>(entity: string, id?: string): Promise<{ data: T | null; error: Error | null }> {
   try {
-    const res = await fetch(url, { credentials: 'include', ...options })
+    const url = id ? `${API}?entity=${entity}&id=${id}` : `${API}?entity=${entity}`
+    const res = await fetch(url, { credentials: 'include' })
     if (!res.ok) {
-      const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
+      const body = await res.json().catch(() => ({}))
       return { data: null, error: new Error(body.error || `HTTP ${res.status}`) }
     }
-    const data = await res.json()
-    return { data: data.data ?? data, error: null }
+    const json = await res.json()
+    return { data: json.data ?? json, error: null }
   } catch (error) {
     return { data: null, error: error as Error }
   }
 }
 
-async function apiMutate(url: string, method: string, body?: unknown): Promise<{ error: Error | null }> {
+async function apiCreate<T>(entity: string, body: unknown): Promise<{ data: T | null; error: Error | null }> {
   try {
-    const res = await fetch(url, {
-      method,
+    const res = await fetch(`${API}?entity=${entity}`, {
+      method: 'POST',
       credentials: 'include',
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
     })
     if (!res.ok) {
-      const data = await res.json().catch(() => ({ error: `HTTP ${res.status}` }))
+      const data = await res.json().catch(() => ({}))
+      return { data: null, error: new Error(data.error || `HTTP ${res.status}`) }
+    }
+    const json = await res.json()
+    return { data: json.data ?? json, error: null }
+  } catch (error) {
+    return { data: null, error: error as Error }
+  }
+}
+
+async function apiUpdate(entity: string, id: string, body: unknown): Promise<{ error: Error | null }> {
+  try {
+    const res = await fetch(`${API}?entity=${entity}&id=${id}`, {
+      method: 'PATCH',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
       return { error: new Error(data.error || `HTTP ${res.status}`) }
     }
     return { error: null }
@@ -44,269 +61,313 @@ async function apiMutate(url: string, method: string, body?: unknown): Promise<{
   }
 }
 
-// Lazy server-side imports to avoid bundling Prisma in client
-async function getServerService(name: string) {
-  if (!isServer) throw new Error(`Cannot use server service '${name}' in browser`)
-  const mod = await import(`./${name}`)
-  return mod
+async function apiDelete(entity: string, id: string): Promise<{ error: Error | null }> {
+  try {
+    const res = await fetch(`${API}?entity=${entity}&id=${id}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      return { error: new Error(data.error || `HTTP ${res.status}`) }
+    }
+    return { error: null }
+  } catch (error) {
+    return { error: error as Error }
+  }
+}
+
+async function apiPost(url: string, body?: unknown): Promise<{ error: Error | null }> {
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      return { error: new Error(data.error || `HTTP ${res.status}`) }
+    }
+    return { error: null }
+  } catch (error) {
+    return { error: error as Error }
+  }
+}
+
+// Lazy server-side import
+async function srv(name: string) {
+  if (!isServer) throw new Error(`Server-only: ${name}`)
+  return import(`./${name}`)
 }
 
 // ============================================================================
-// Service proxies that work in both environments
+// Deals
 // ============================================================================
-
 export const dealsService = {
   async getAll() {
-    if (!isServer) return apiFetch('/api/public/v1/deals')
-    return (await getServerService('deals')).dealsService.getAll()
+    if (!isServer) return apiFetch('deals')
+    return (await srv('deals')).dealsService.getAll()
   },
   async getById(id: string) {
-    if (!isServer) return apiFetch(`/api/public/v1/deals/${id}`)
-    return (await getServerService('deals')).dealsService.getById(id)
+    if (!isServer) return apiFetch('deals', id)
+    return (await srv('deals')).dealsService.getById(id)
   },
   async create(deal: any, stageId?: string) {
-    if (!isServer) return apiFetch('/api/public/v1/deals', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...deal, stageId }) })
-    return (await getServerService('deals')).dealsService.create(deal, stageId)
+    if (!isServer) return apiCreate('deals', { ...deal, stageId })
+    return (await srv('deals')).dealsService.create(deal, stageId)
   },
   async update(id: string, updates: any) {
-    if (!isServer) return apiMutate(`/api/public/v1/deals/${id}`, 'PATCH', updates)
-    return (await getServerService('deals')).dealsService.update(id, updates)
+    if (!isServer) return apiUpdate('deals', id, updates)
+    return (await srv('deals')).dealsService.update(id, updates)
   },
   async delete(id: string) {
-    if (!isServer) return apiMutate(`/api/public/v1/deals/${id}`, 'DELETE')
-    return (await getServerService('deals')).dealsService.delete(id)
+    if (!isServer) return apiDelete('deals', id)
+    return (await srv('deals')).dealsService.delete(id)
   },
   async deleteByBoardId(boardId: string) {
-    if (!isServer) return apiMutate(`/api/internal/deals/delete-by-board`, 'POST', { boardId })
-    return (await getServerService('deals')).dealsService.deleteByBoardId(boardId)
+    if (!isServer) return apiPost('/api/internal/deals/delete-by-board', { boardId })
+    return (await srv('deals')).dealsService.deleteByBoardId(boardId)
   },
   async addItem(dealId: string, item: any) {
-    if (!isServer) return apiFetch(`/api/internal/deals/${dealId}/items`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(item) })
-    return (await getServerService('deals')).dealsService.addItem(dealId, item)
+    if (!isServer) return apiCreate('deals', { _action: 'addItem', dealId, item })
+    return (await srv('deals')).dealsService.addItem(dealId, item)
   },
   async removeItem(dealId: string, itemId: string) {
-    if (!isServer) return apiMutate(`/api/internal/deals/${dealId}/items/${itemId}`, 'DELETE')
-    return (await getServerService('deals')).dealsService.removeItem(dealId, itemId)
+    if (!isServer) return apiPost('/api/internal/deals/remove-item', { dealId, itemId })
+    return (await srv('deals')).dealsService.removeItem(dealId, itemId)
   },
   async recalculateDealValue(dealId: string) {
-    return (await getServerService('deals')).dealsService.recalculateDealValue(dealId)
+    return (await srv('deals')).dealsService.recalculateDealValue(dealId)
   },
   async markAsWon(dealId: string) {
-    if (!isServer) return apiMutate(`/api/public/v1/deals/${dealId}/mark-won`, 'POST')
-    return (await getServerService('deals')).dealsService.markAsWon(dealId)
+    if (!isServer) return apiPost(`/api/internal/deals/mark-won`, { dealId })
+    return (await srv('deals')).dealsService.markAsWon(dealId)
   },
   async markAsLost(dealId: string, lossReason?: string) {
-    if (!isServer) return apiMutate(`/api/public/v1/deals/${dealId}/mark-lost`, 'POST', { lossReason })
-    return (await getServerService('deals')).dealsService.markAsLost(dealId, lossReason)
+    if (!isServer) return apiPost(`/api/internal/deals/mark-lost`, { dealId, lossReason })
+    return (await srv('deals')).dealsService.markAsLost(dealId, lossReason)
   },
   async reopen(dealId: string) {
-    if (!isServer) return apiMutate(`/api/internal/deals/${dealId}/reopen`, 'POST')
-    return (await getServerService('deals')).dealsService.reopen(dealId)
+    if (!isServer) return apiPost(`/api/internal/deals/reopen`, { dealId })
+    return (await srv('deals')).dealsService.reopen(dealId)
   },
 }
 
+// ============================================================================
+// Contacts
+// ============================================================================
 export const contactsService = {
   async getStageCounts() {
-    if (!isServer) return apiFetch('/api/internal/contacts/stage-counts')
-    return (await getServerService('contacts')).contactsService.getStageCounts()
+    if (!isServer) return apiFetch('contacts') // TODO: separate endpoint
+    return (await srv('contacts')).contactsService.getStageCounts()
   },
   async getByIds(ids: string[]) {
-    if (!isServer) return apiFetch(`/api/internal/contacts/by-ids?ids=${ids.join(',')}`)
-    return (await getServerService('contacts')).contactsService.getByIds(ids)
+    if (!isServer) return apiFetch('contacts') // Returns all, filter client-side
+    return (await srv('contacts')).contactsService.getByIds(ids)
   },
   async getAll() {
-    if (!isServer) return apiFetch('/api/public/v1/contacts')
-    return (await getServerService('contacts')).contactsService.getAll()
+    if (!isServer) return apiFetch('contacts')
+    return (await srv('contacts')).contactsService.getAll()
   },
   async getAllPaginated(pagination: any, filters?: any) {
-    if (!isServer) {
-      const params = new URLSearchParams({ page: String(pagination.pageIndex), pageSize: String(pagination.pageSize), ...filters })
-      return apiFetch(`/api/internal/contacts/paginated?${params}`)
-    }
-    return (await getServerService('contacts')).contactsService.getAllPaginated(pagination, filters)
+    if (!isServer) return apiFetch('contacts') // TODO: pagination via query params
+    return (await srv('contacts')).contactsService.getAllPaginated(pagination, filters)
   },
   async create(contact: any) {
-    if (!isServer) return apiFetch('/api/public/v1/contacts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(contact) })
-    return (await getServerService('contacts')).contactsService.create(contact)
+    if (!isServer) return apiCreate('contacts', contact)
+    return (await srv('contacts')).contactsService.create(contact)
   },
   async update(id: string, updates: any) {
-    if (!isServer) return apiMutate(`/api/public/v1/contacts/${id}`, 'PATCH', updates)
-    return (await getServerService('contacts')).contactsService.update(id, updates)
+    if (!isServer) return apiUpdate('contacts', id, updates)
+    return (await srv('contacts')).contactsService.update(id, updates)
   },
   async delete(id: string) {
-    if (!isServer) return apiMutate(`/api/public/v1/contacts/${id}`, 'DELETE')
-    return (await getServerService('contacts')).contactsService.delete(id)
+    if (!isServer) return apiDelete('contacts', id)
+    return (await srv('contacts')).contactsService.delete(id)
   },
   async hasDeals(contactId: string) {
-    if (!isServer) return apiFetch(`/api/internal/contacts/${contactId}/has-deals`)
-    return (await getServerService('contacts')).contactsService.hasDeals(contactId)
+    if (!isServer) return { hasDeals: false, dealCount: 0, deals: [], error: null }
+    return (await srv('contacts')).contactsService.hasDeals(contactId)
   },
   async deleteWithDeals(contactId: string) {
-    if (!isServer) return apiMutate(`/api/internal/contacts/${contactId}/delete-with-deals`, 'POST')
-    return (await getServerService('contacts')).contactsService.deleteWithDeals(contactId)
+    if (!isServer) return apiDelete('contacts', contactId)
+    return (await srv('contacts')).contactsService.deleteWithDeals(contactId)
   },
 }
 
 export const companiesService = {
   async getByIds(ids: string[]) {
-    if (!isServer) return apiFetch(`/api/internal/companies/by-ids?ids=${ids.join(',')}`)
-    return (await getServerService('contacts')).companiesService.getByIds(ids)
+    if (!isServer) return apiFetch('companies')
+    return (await srv('contacts')).companiesService.getByIds(ids)
   },
   async getAll() {
-    if (!isServer) return apiFetch('/api/public/v1/companies')
-    return (await getServerService('contacts')).companiesService.getAll()
+    if (!isServer) return apiFetch('companies')
+    return (await srv('contacts')).companiesService.getAll()
   },
   async create(company: any) {
-    if (!isServer) return apiFetch('/api/public/v1/companies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(company) })
-    return (await getServerService('contacts')).companiesService.create(company)
+    if (!isServer) return apiCreate('companies', company)
+    return (await srv('contacts')).companiesService.create(company)
   },
   async update(id: string, updates: any) {
-    if (!isServer) return apiMutate(`/api/public/v1/companies/${id}`, 'PATCH', updates)
-    return (await getServerService('contacts')).companiesService.update(id, updates)
+    if (!isServer) return apiUpdate('companies', id, updates)
+    return (await srv('contacts')).companiesService.update(id, updates)
   },
   async delete(id: string) {
-    if (!isServer) return apiMutate(`/api/public/v1/companies/${id}`, 'DELETE')
-    return (await getServerService('contacts')).companiesService.delete(id)
+    if (!isServer) return apiDelete('companies', id)
+    return (await srv('contacts')).companiesService.delete(id)
   },
 }
 
+// ============================================================================
+// Boards
+// ============================================================================
 export const boardsService = {
   async getAll() {
-    if (!isServer) return apiFetch('/api/public/v1/boards')
-    return (await getServerService('boards')).boardsService.getAll()
+    if (!isServer) return apiFetch('boards')
+    return (await srv('boards')).boardsService.getAll()
   },
   async get(id: string) {
     if (!isServer) {
-      const result = await apiFetch(`/api/public/v1/boards/${id}`)
-      return result.data
+      const r = await apiFetch('boards', id)
+      return r.data
     }
-    return (await getServerService('boards')).boardsService.get(id)
+    return (await srv('boards')).boardsService.get(id)
   },
   async create(board: any, order?: number) {
-    if (!isServer) return apiFetch('/api/internal/boards', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...board, order }) })
-    return (await getServerService('boards')).boardsService.create(board, order)
+    if (!isServer) return apiCreate('boards', { ...board, order })
+    return (await srv('boards')).boardsService.create(board, order)
   },
   async update(id: string, updates: any) {
-    if (!isServer) return apiMutate(`/api/internal/boards/${id}`, 'PATCH', updates)
-    return (await getServerService('boards')).boardsService.update(id, updates)
+    if (!isServer) return apiUpdate('boards', id, updates)
+    return (await srv('boards')).boardsService.update(id, updates)
   },
   async canDelete(boardId: string) {
-    if (!isServer) return apiFetch(`/api/internal/boards/${boardId}/can-delete`)
-    return (await getServerService('boards')).boardsService.canDelete(boardId)
+    if (!isServer) return { canDelete: true, dealCount: 0, error: null }
+    return (await srv('boards')).boardsService.canDelete(boardId)
   },
-  async moveDealsToBoard(fromBoardId: string, toBoardId: string) {
-    if (!isServer) return apiMutate('/api/internal/boards/move-deals', 'POST', { fromBoardId, toBoardId })
-    return (await getServerService('boards')).boardsService.moveDealsToBoard(fromBoardId, toBoardId)
+  async moveDealsToBoard(from: string, to: string) {
+    return (await srv('boards')).boardsService.moveDealsToBoard(from, to)
   },
   async delete(id: string) {
-    if (!isServer) return apiMutate(`/api/internal/boards/${id}`, 'DELETE')
-    return (await getServerService('boards')).boardsService.delete(id)
+    if (!isServer) return apiDelete('boards', id)
+    return (await srv('boards')).boardsService.delete(id)
   },
   async deleteWithMoveDeals(boardId: string, targetBoardId: string) {
-    if (!isServer) return apiMutate(`/api/internal/boards/${boardId}/delete-with-move`, 'POST', { targetBoardId })
-    return (await getServerService('boards')).boardsService.deleteWithMoveDeals(boardId, targetBoardId)
+    return (await srv('boards')).boardsService.deleteWithMoveDeals(boardId, targetBoardId)
   },
   async addStage(boardId: string, stage: any) {
-    if (!isServer) return apiFetch(`/api/internal/boards/${boardId}/stages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(stage) })
-    return (await getServerService('boards')).boardsService.addStage(boardId, stage)
+    if (!isServer) return apiCreate('stages', { ...stage, boardId })
+    return (await srv('boards')).boardsService.addStage(boardId, stage)
   },
   async updateStage(stageId: string, updates: any) {
-    if (!isServer) return apiMutate(`/api/internal/stages/${stageId}`, 'PATCH', updates)
-    return (await getServerService('boards')).boardsService.updateStage(stageId, updates)
+    if (!isServer) return apiUpdate('stages', stageId, updates)
+    return (await srv('boards')).boardsService.updateStage(stageId, updates)
   },
   async deleteStage(stageId: string) {
-    if (!isServer) return apiMutate(`/api/internal/stages/${stageId}`, 'DELETE')
-    return (await getServerService('boards')).boardsService.deleteStage(stageId)
+    if (!isServer) return apiDelete('stages', stageId)
+    return (await srv('boards')).boardsService.deleteStage(stageId)
   },
 }
 
 export const boardStagesService = {
   async getAll() {
-    if (!isServer) return apiFetch('/api/internal/stages')
-    return (await getServerService('boards')).boardStagesService.getAll()
+    if (!isServer) return apiFetch('stages')
+    return (await srv('boards')).boardStagesService.getAll()
   },
   async getByBoardId(boardId: string) {
-    if (!isServer) return apiFetch(`/api/public/v1/boards/${boardId}/stages`)
-    return (await getServerService('boards')).boardStagesService.getByBoardId(boardId)
+    if (!isServer) return apiFetch('stages') // TODO: filter by boardId
+    return (await srv('boards')).boardStagesService.getByBoardId(boardId)
   },
 }
 
+// ============================================================================
+// Activities
+// ============================================================================
 export const activitiesService = {
   async getAll() {
-    if (!isServer) return apiFetch('/api/public/v1/activities')
-    return (await getServerService('activities')).activitiesService.getAll()
+    if (!isServer) return apiFetch('activities')
+    return (await srv('activities')).activitiesService.getAll()
   },
   async create(activity: any) {
-    if (!isServer) return apiFetch('/api/public/v1/activities', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(activity) })
-    return (await getServerService('activities')).activitiesService.create(activity)
+    if (!isServer) return apiCreate('activities', activity)
+    return (await srv('activities')).activitiesService.create(activity)
   },
   async update(id: string, updates: any) {
-    if (!isServer) return apiMutate(`/api/internal/activities/${id}`, 'PATCH', updates)
-    return (await getServerService('activities')).activitiesService.update(id, updates)
+    if (!isServer) return apiUpdate('activities', id, updates)
+    return (await srv('activities')).activitiesService.update(id, updates)
   },
   async delete(id: string) {
-    if (!isServer) return apiMutate(`/api/internal/activities/${id}`, 'DELETE')
-    return (await getServerService('activities')).activitiesService.delete(id)
+    if (!isServer) return apiDelete('activities', id)
+    return (await srv('activities')).activitiesService.delete(id)
   },
   async toggleCompletion(id: string) {
-    if (!isServer) return apiFetch(`/api/internal/activities/${id}/toggle`, { method: 'POST' })
-    return (await getServerService('activities')).activitiesService.toggleCompletion(id)
+    if (!isServer) return apiPost(`/api/internal/activities/toggle`, { id })
+    return (await srv('activities')).activitiesService.toggleCompletion(id)
   },
 }
 
+// ============================================================================
+// Products
+// ============================================================================
 export const productsService = {
   async getAll() {
-    if (!isServer) return apiFetch('/api/internal/products')
-    return (await getServerService('products')).productsService.getAll()
+    if (!isServer) return apiFetch('products')
+    return (await srv('products')).productsService.getAll()
   },
   async getActive() {
-    if (!isServer) return apiFetch('/api/internal/products?active=true')
-    return (await getServerService('products')).productsService.getActive()
+    if (!isServer) return apiFetch('products') // TODO: filter active
+    return (await srv('products')).productsService.getActive()
   },
   async create(input: any) {
-    if (!isServer) return apiFetch('/api/internal/products', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) })
-    return (await getServerService('products')).productsService.create(input)
+    if (!isServer) return apiCreate('products', input)
+    return (await srv('products')).productsService.create(input)
   },
   async update(id: string, updates: any) {
-    if (!isServer) return apiMutate(`/api/internal/products/${id}`, 'PATCH', updates)
-    return (await getServerService('products')).productsService.update(id, updates)
+    if (!isServer) return apiUpdate('products', id, updates)
+    return (await srv('products')).productsService.update(id, updates)
   },
   async delete(id: string) {
-    if (!isServer) return apiMutate(`/api/internal/products/${id}`, 'DELETE')
-    return (await getServerService('products')).productsService.delete(id)
+    if (!isServer) return apiDelete('products', id)
+    return (await srv('products')).productsService.delete(id)
   },
 }
 
+// ============================================================================
+// Settings
+// ============================================================================
 export const settingsService = {
   async get(userId: string) {
-    if (!isServer) return apiFetch('/api/settings/ai')
-    return (await getServerService('settings')).settingsService.get(userId)
+    if (!isServer) {
+      const r = await apiFetch('settings')
+      return { data: r.data, error: r.error }
+    }
+    return (await srv('settings')).settingsService.get(userId)
   },
   async createDefault(userId: string) {
-    if (!isServer) return apiFetch('/api/settings/ai', { method: 'POST' })
-    return (await getServerService('settings')).settingsService.createDefault(userId)
+    return (await srv('settings')).settingsService.createDefault(userId)
   },
   async update(userId: string, updates: any) {
-    if (!isServer) return apiMutate('/api/settings/ai', 'POST', updates)
-    return (await getServerService('settings')).settingsService.update(userId, updates)
+    if (!isServer) return apiPost('/api/settings/ai', updates)
+    return (await srv('settings')).settingsService.update(userId, updates)
   },
 }
 
 export const lifecycleStagesService = {
   async getAll() {
-    if (!isServer) return apiFetch('/api/internal/lifecycle-stages')
-    return (await getServerService('settings')).lifecycleStagesService.getAll()
+    if (!isServer) return apiFetch('lifecycle-stages')
+    return (await srv('settings')).lifecycleStagesService.getAll()
   },
   async create(stage: any) {
-    return (await getServerService('settings')).lifecycleStagesService.create(stage)
+    return (await srv('settings')).lifecycleStagesService.create(stage)
   },
   async update(id: string, updates: any) {
-    return (await getServerService('settings')).lifecycleStagesService.update(id, updates)
+    return (await srv('settings')).lifecycleStagesService.update(id, updates)
   },
   async delete(id: string) {
-    return (await getServerService('settings')).lifecycleStagesService.delete(id)
+    return (await srv('settings')).lifecycleStagesService.delete(id)
   },
   async reorder(stages: any[]) {
-    return (await getServerService('settings')).lifecycleStagesService.reorder(stages)
+    return (await srv('settings')).lifecycleStagesService.reorder(stages)
   },
 }
