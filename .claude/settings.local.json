@@ -50,7 +50,8 @@
       "Bash(python3 -m json.tool echo \"\")",
       "Bash(curl -s http://localhost:3000/api/auth/session)",
       "Bash(docker exec:*)",
-      "Bash(curl -s http://localhost:3000/api/auth/csrf -c /tmp/docker-cookies.txt)"
+      "Bash(curl -s http://localhost:3000/api/auth/csrf -c /tmp/docker-cookies.txt)",
+      "Bash(python3 -m json.tool echo \"\" echo \"=== Logs ===\" docker logs autocrm-app-1)"
     ]
   }
 }

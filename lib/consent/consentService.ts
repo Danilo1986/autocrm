@@ -1,48 +1,27 @@
 /**
- * @fileoverview Serviço de gerenciamento de consentimentos LGPD.
+ * Client-safe Consent Service (LGPD)
  *
- * Este módulo gerencia os consentimentos do usuário para compliance com a LGPD
- * (Lei Geral de Proteção de Dados). Suporta múltiplos tipos de consentimento,
- * versionamento, revogação e exportação de histórico.
- *
- * Now backed by Prisma instead of Supabase.
- *
- * @module services/consentService
- * @see {@link https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/lei/l13709.htm LGPD}
+ * Uses fetch API to call server endpoints - no Prisma import.
  */
 
-import {
-  getUserConsents as prismaGetConsents,
-  grantConsent as prismaGrantConsent,
-  revokeConsent as prismaRevokeConsent,
-  CONSENT_VERSIONS as PRISMA_CONSENT_VERSIONS,
-  type ConsentType,
-} from '@/lib/services/consent';
+export type ConsentType = 'terms' | 'privacy' | 'marketing' | 'analytics' | 'data_processing' | 'AI_CONSENT'
 
-export type { ConsentType };
-
-/**
- * Registro de consentimento do usuário no banco de dados.
- */
 export interface UserConsent {
-  id: string;
-  user_id: string;
-  consent_type: ConsentType;
-  version: string;
-  consented_at: string;
-  ip_address: string | null;
-  user_agent: string | null;
-  revoked_at: string | null;
+  id: string
+  user_id: string
+  consent_type: ConsentType
+  version: string
+  consented_at: string
+  ip_address: string | null
+  user_agent: string | null
+  revoked_at: string | null
 }
 
-/**
- * Registro simplificado de status de consentimento.
- */
 export interface ConsentRecord {
-  type: ConsentType;
-  version: string;
-  consented: boolean;
-  consentedAt?: string;
+  type: ConsentType
+  version: string
+  consented: boolean
+  consentedAt?: string
 }
 
 export const CONSENT_VERSIONS: Record<ConsentType, string> = {
@@ -52,111 +31,96 @@ export const CONSENT_VERSIONS: Record<ConsentType, string> = {
   analytics: '1.0.0',
   data_processing: '1.0.0',
   AI_CONSENT: '1.0.0',
-};
+}
 
-export const REQUIRED_CONSENTS: ConsentType[] = ['terms', 'privacy', 'data_processing'];
-export const OPTIONAL_CONSENTS: ConsentType[] = ['marketing', 'analytics'];
+export const REQUIRED_CONSENTS: ConsentType[] = ['terms', 'privacy', 'data_processing']
+export const OPTIONAL_CONSENTS: ConsentType[] = ['marketing', 'analytics']
 
-/**
- * Serviço de gerenciamento de consentimentos LGPD.
- *
- * NOTE: This service requires a userId. In client components, use API routes.
- * In server components/routes, pass the userId from the session.
- */
 class ConsentService {
-  private userId: string | null = null;
+  private userId: string | null = null
 
   setUserId(userId: string) {
-    this.userId = userId;
+    this.userId = userId
   }
 
   async getUserConsents(): Promise<UserConsent[]> {
-    if (!this.userId) {
-      console.error('ConsentService: No userId set');
-      return [];
+    try {
+      const res = await fetch('/api/internal/consents', { credentials: 'include' })
+      if (!res.ok) return []
+      const { data } = await res.json()
+      return data || []
+    } catch {
+      return []
     }
-    const consents = await prismaGetConsents(this.userId);
-    return consents.map(c => ({
-      id: c.id,
-      user_id: c.userId,
-      consent_type: c.consentType as ConsentType,
-      version: c.version,
-      consented_at: c.consentedAt?.toISOString?.() ?? (c as any).consentedAt ?? '',
-      ip_address: c.ipAddress ?? null,
-      user_agent: c.userAgent ?? null,
-      revoked_at: c.revokedAt?.toISOString?.() ?? null,
-    }));
   }
 
   async hasRequiredConsents(): Promise<boolean> {
-    const consents = await this.getUserConsents();
-    return REQUIRED_CONSENTS.every((requiredType) => {
-      const consent = consents.find(c => c.consent_type === requiredType);
-      if (!consent) return false;
-      return consent.version === CONSENT_VERSIONS[requiredType];
-    });
+    const consents = await this.getUserConsents()
+    return REQUIRED_CONSENTS.every((type) => {
+      const c = consents.find((x: UserConsent) => x.consent_type === type)
+      return c && c.version === CONSENT_VERSIONS[type]
+    })
   }
 
   async getMissingConsents(): Promise<ConsentType[]> {
-    const consents = await this.getUserConsents();
-    return REQUIRED_CONSENTS.filter((requiredType) => {
-      const consent = consents.find(c => c.consent_type === requiredType);
-      if (!consent) return true;
-      return consent.version !== CONSENT_VERSIONS[requiredType];
-    });
+    const consents = await this.getUserConsents()
+    return REQUIRED_CONSENTS.filter((type) => {
+      const c = consents.find((x: UserConsent) => x.consent_type === type)
+      return !c || c.version !== CONSENT_VERSIONS[type]
+    })
   }
 
-  async giveConsent(
-    type: ConsentType,
-    options?: { ipAddress?: string; userAgent?: string }
-  ): Promise<boolean> {
-    if (!this.userId) {
-      console.error('ConsentService: No userId set');
-      return false;
+  async giveConsent(type: ConsentType): Promise<boolean> {
+    try {
+      const res = await fetch('/api/internal/consents', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'grant', type }),
+      })
+      return res.ok
+    } catch {
+      return false
     }
-    return prismaGrantConsent(this.userId, type, {
-      ipAddress: options?.ipAddress,
-      userAgent: options?.userAgent,
-    });
   }
 
-  async giveConsents(
-    types: ConsentType[],
-    options?: { ipAddress?: string; userAgent?: string }
-  ): Promise<boolean> {
-    const results = await Promise.all(
-      types.map(type => this.giveConsent(type, options))
-    );
-    return results.every(r => r);
+  async giveConsents(types: ConsentType[]): Promise<boolean> {
+    const results = await Promise.all(types.map((t) => this.giveConsent(t)))
+    return results.every(Boolean)
   }
 
   async revokeConsent(type: ConsentType): Promise<boolean> {
-    if (!this.userId) {
-      console.error('ConsentService: No userId set');
-      return false;
+    try {
+      const res = await fetch('/api/internal/consents', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'revoke', type }),
+      })
+      return res.ok
+    } catch {
+      return false
     }
-    return prismaRevokeConsent(this.userId, type);
   }
 
   async getConsentStatus(): Promise<Record<ConsentType, ConsentRecord>> {
-    const consents = await this.getUserConsents();
-    const allTypes: ConsentType[] = [...REQUIRED_CONSENTS, ...OPTIONAL_CONSENTS];
+    const consents = await this.getUserConsents()
+    const allTypes: ConsentType[] = [...REQUIRED_CONSENTS, ...OPTIONAL_CONSENTS]
     return allTypes.reduce((acc, type) => {
-      const consent = consents.find(c => c.consent_type === type);
+      const c = consents.find((x: UserConsent) => x.consent_type === type)
       acc[type] = {
         type,
         version: CONSENT_VERSIONS[type],
-        consented: consent?.version === CONSENT_VERSIONS[type],
-        consentedAt: consent?.consented_at,
-      };
-      return acc;
-    }, {} as Record<ConsentType, ConsentRecord>);
+        consented: c?.version === CONSENT_VERSIONS[type],
+        consentedAt: c?.consented_at,
+      }
+      return acc
+    }, {} as Record<ConsentType, ConsentRecord>)
   }
 
   async exportConsentHistory(): Promise<UserConsent[]> {
-    // For full history including revoked, we need the userId
-    return this.getUserConsents();
+    return this.getUserConsents()
   }
 }
 
-export const consentService = new ConsentService();
+export const consentService = new ConsentService()
